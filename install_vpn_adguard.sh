@@ -4,7 +4,7 @@
 # Скрипт автоматической установки VPN-сервера с VLESS + TLS + 3X-UI + AdGuard Home
 # Автор: KodoDrive
 # Версия: 2.0
-# Установка: bash <(curl -fsSL https://raw.githubusercontent.com/kododrive/vpn-server-installer/main/install_vless_adguard.sh)
+# Установка: bash <(curl -fsSL https://github.com/svod011929/vpn-server-installer/blob/main/install_vpn_adguard.sh)
 
 set -euo pipefail
 
