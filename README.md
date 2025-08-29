@@ -77,7 +77,7 @@
 ### 🎯 Быстрая установка одной командой
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/svod011929/vpn-server-installer/main/install_vless_adguard.sh)
+bash <(curl -fsSL https://github.com/svod011929/vpn-server-installer/blob/main/install_vpn_adguard.sh)
 ```
 
 ### 🔧 Альтернативные способы
