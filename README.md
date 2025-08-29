@@ -193,7 +193,7 @@ sudo vpn-install
 
 ```bash
 # Установка с параметрами
-bash <(curl -fsSL https://raw.githubusercontent.com/svod011929/vpn-server-installer/main/install_vless_adguard.sh) \
+bash <(curl -fsSL https://raw.githubusercontent.com/svod011929/vpn-server-installer/main/install_vpn_adguard.sh)
   --domain "vpn.example.com" \
   --email "admin@example.com" \
   --xui-password "your_secure_password" \
@@ -657,7 +657,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/svod011929/vpn-server-instal
 **Установите VPN-сервер прямо сейчас одной командой:**
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/svod011929/vpn-server-installer/main/install_vless_adguard.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/svod011929/vpn-server-installer/main/install_vpn_adguard.sh)
 ```
 
 **⭐ Если проект помог - поставьте звезду!**
@@ -667,27 +667,6 @@ Made with ❤️ by [svod011929](https://github.com/svod011929)
 [⬆ Наверх](#-vpn-server-auto-installer)
 
 </div>
-```
-
-Также обновлю переменные в самом скрипте:
-
-```bash
-#!/bin/bash
-
-# install_vless_adguard.sh
-# Скрипт автоматической установки VPN-сервера с VLESS + TLS + 3X-UI + AdGuard Home
-# Автор: svod011929
-# Версия: 1.0
-# Установка: bash <(curl -fsSL https://raw.githubusercontent.com/svod011929/vpn-server-installer/main/install_vless_adguard.sh)
-
-set -e
-
-# Версия скрипта
-SCRIPT_VERSION="1.0.0"
-SCRIPT_URL="https://raw.githubusercontent.com/svod011929/vpn-server-installer/main/install_vless_adguard.sh"
-REPO_URL="https://github.com/svod011929/vpn-server-installer"
-
-# ... остальной код остается таким же
 ```
 
 Теперь все ссылки и упоминания корректно ведут на ваш GitHub репозиторий `svod011929/vpn-server-installer`!
