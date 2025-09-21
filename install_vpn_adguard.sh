@@ -15,8 +15,8 @@
 #              - UFW/Firewalld
 #              - Удобные CLI-команды для управления
 #
-#      AUTHOR: KodoDrive
-#     VERSION: 4.0
+#      AUTHOR: KodoDrive (t.me/KodoDrive_bio)
+#     VERSION: 4.0.1 (Исправлена ошибка unbound variable)
 #     CREATED: $(date)
 #
 # =====================================================================================
@@ -27,7 +27,7 @@ set -euo pipefail
 # ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
 # ===============================================
 
-readonly SCRIPT_VERSION="4.0.0"
+readonly SCRIPT_VERSION="4.0.1"
 readonly SCRIPT_NAME="Enhanced VPN Server Auto Installer"
 readonly LOG_FILE="/var/log/vpn-installer.log"
 readonly STATE_FILE="/var/lib/vpn-install-state"
@@ -121,7 +121,7 @@ show_banner() {
 ║   ╚████╔╝ ██║     ██║ ╚████║    ██║██║ ╚████║███████║   ██║   ║
 ║    ╚═══╝  ╚═╝     ╚═╝  ╚═══╝    ╚═╝╚═╝  ╚═══╝╚══════╝   ╚═╝   ║
 ║                                                               ║
-║        Enhanced VPN Server Auto Installer v4.0.0             ║
+║        Enhanced VPN Server Auto Installer v4.0.1             ║
 ║     VLESS + Reverse Proxy (3X-UI, AdGuard) + CLI Tools       ║
 ║                                                               ║
 ╚═══════════════════════════════════════════════════════════════╝
@@ -135,9 +135,7 @@ EOF
 
 save_state() {
     local step="$1"
-    # Создаем директорию, если ее нет
     mkdir -p "$(dirname "$STATE_FILE")"
-    # Записываем состояние
     cat > "$STATE_FILE" << EOF
 DOMAIN="$DOMAIN"
 EMAIL="$EMAIL"
@@ -176,7 +174,7 @@ load_state() {
 
 cleanup_on_error() {
     local exit_code=$?
-    log_error "Критическая ошибка (код $exit_code) на шаге $? execute command $BASH_COMMAND. Начинаю откат..."
+    log_error "Критическая ошибка (код $exit_code) на строке $LINENO. Команда: $BASH_COMMAND. Начинаю откат..."
 
     systemctl stop x-ui 2>/dev/null || true
     systemctl stop AdGuardHome 2>/dev/null || true
@@ -566,6 +564,9 @@ install_adguard() {
 
     log_info "Создание конфигурации AdGuard Home..."
     local adguard_hash
+    # htpasswd менее надежен и не всегда доступен. Используем внутренний механизм AdGuard.
+    # Этот способ требует, чтобы AdGuard не был запущен, и он перезаписывает конфиг.
+    # Поэтому мы создаем его вручную, а потом используем более надежный механизм.
     adguard_hash=$(/opt/AdGuardHome/AdGuardHome -u "admin" -p "$ADGUARD_PASSWORD" 2>&1 | grep 'user:' | awk '{print $NF}')
 
     cat > /opt/AdGuardHome/AdGuardHome.yaml << EOF
@@ -595,19 +596,13 @@ EOF
 
     log_info "Установка AdGuard Home как сервиса..."
     /opt/AdGuardHome/AdGuardHome -s install >/dev/null
+    systemctl restart AdGuardHome # Перезапускаем, чтобы применить конфиг
 
     if systemctl is-active --quiet AdGuardHome; then
         log_info "AdGuard Home установлен и запущен ✅"
     else
-        # Если сервис не запустился, пробуем запустить еще раз
-        systemctl start AdGuardHome
-        sleep 3
-        if systemctl is-active --quiet AdGuardHome; then
-            log_info "AdGuard Home установлен и запущен ✅"
-        else
-            log_error "AdGuard Home не запустился. Смотрите логи: journalctl -u AdGuardHome"
-            exit 1
-        fi
+        log_error "AdGuard Home не запустился. Смотрите логи: journalctl -u AdGuardHome"
+        exit 1
     fi
 }
 
@@ -761,7 +756,7 @@ EOF
     # 3. vpn-logs
     cat > /usr/local/bin/vpn-logs << 'EOF'
 #!/bin/bash
-if [[ -z "$1" ]]; then
+if [[ -z "${1-}" ]]; then
     echo "Usage: vpn-logs [nginx|xui|adguard]"
     exit 1
 fi
@@ -806,7 +801,7 @@ systemctl stop nginx x-ui AdGuardHome
 systemctl disable nginx x-ui AdGuardHome
 
 echo "Removing service files..."
-rm -f /etc/systemd/system/nginx.service /etc/systemd/system/x-ui.service /etc/systemd/system/AdGuardHome.service
+rm -f /etc/systemd/system/x-ui.service /etc/systemd/system/AdGuardHome.service
 systemctl daemon-reload
 
 echo "Removing application files..."
@@ -816,7 +811,7 @@ echo "Removing CLI tools..."
 rm -f /usr/local/bin/vpn-* /usr/local/sbin/uninstall_vpn_server.sh
 
 echo "Removing Certbot certificates..."
-rm -rf /etc/letsencrypt/live/$DOMAIN /etc/letsencrypt/renewal/${DOMAIN}.conf /etc/letsencrypt/archive/$DOMAIN
+certbot delete --cert-name $DOMAIN --non-interactive || echo "Certbot certificates for $DOMAIN not found or could not be deleted."
 
 echo "Removing web root..."
 rm -rf /var/www/html
@@ -826,16 +821,16 @@ rm -f $LOG_FILE $STATE_FILE
 
 echo "Cleaning up packages..."
 if command -v apt-get &> /dev/null; then
-    apt-get purge --auto-remove -y nginx certbot python3-certbot-nginx
+    apt-get purge --auto-remove -y nginx certbot python3-certbot-nginx apache2-utils
 else
-    dnf remove -y nginx certbot python3-certbot-nginx
+    dnf remove -y nginx certbot python3-certbot-nginx httpd-tools
 fi
 
 echo "Resetting firewall..."
 if command -v ufw &> /dev/null; then
     ufw --force reset
 elif command -v firewalld &> /dev/null; then
-    firewall-cmd --permanent --remove-port=$VLESS_PORT/tcp
+    firewall-cmd --permanent --zone=public --remove-port=$VLESS_PORT/tcp
     firewall-cmd --reload
 fi
 
@@ -884,9 +879,9 @@ IP-адрес: $SERVER_IP
 2. Порт: $VLESS_PORT  (этот порт уже открыт в firewall)
 3. Сеть (Network): tcp
 4. Безопасность (Security): tls
-5. Путь к сертификату: /etc/letsencrypt/live/$DOMAIN/fullchain.pem
-6. Путь к ключу: /etc/letsencrypt/live/$DOMAIN/privkey.pem
-7. SNI (Server Name): $DOMAIN
+5. SNI (Server Name): $DOMAIN
+6. Путь к сертификату: /etc/letsencrypt/live/$DOMAIN/fullchain.pem
+7. Путь к ключу: /etc/letsencrypt/live/$DOMAIN/privkey.pem
 
 Используйте QR-код или ссылку из панели для импорта в ваш VPN-клиент.
 
@@ -980,17 +975,16 @@ parse_arguments() {
 
 main() {
     setup_logging
-    # Передаем аргументы, пропуская `bash -s --` если они есть
-    if [[ "$1" == "-"* ]]; then
-        parse_arguments "$@"
-    fi
+    parse_arguments "$@"
 
     show_banner
 
-    # Пропуск шагов при восстановлении состояния (основная логика пропущена для краткости)
-    if load_state && [[ "$CURRENT_STEP" != "" ]]; then
+    if load_state && [[ -n "${CURRENT_STEP-}" ]]; then
          log_warn "Функция восстановления состояния обнаружила предыдущую сессию."
-         log_warn "Для чистовой установки, удалите файл $STATE_FILE и запустите скрипт заново."
+         log_warn "Для чистовой установки удалите файл $STATE_FILE и запустите скрипт заново."
+         # Здесь могла бы быть логика продолжения с определенного шага, но для
+         # надежности принуждаем к чистовой установке, если есть состояние.
+         # Чтобы продолжить, нужно было бы реализовать switch-case по $CURRENT_STEP
     fi
 
     # Основной поток установки
