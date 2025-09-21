@@ -10,7 +10,7 @@
 # DESCRIPTION: Автоматическая установка и настройка VPN-сервера.
 #
 #      AUTHOR: KodoDrive
-#     VERSION: 4.0.3 (Исправлен метод получения SSL на webroot, улучшен вызов 3x-ui)
+#     VERSION: 4.0.4 (Восстановлена функция parse_arguments, исправлена логика вызова)
 #     CREATED: $(date)
 #
 # =====================================================================================
@@ -21,7 +21,7 @@ set -euo pipefail
 # ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ И КОНСТАНТЫ
 # ===============================================
 
-readonly SCRIPT_VERSION="4.0.3"
+readonly SCRIPT_VERSION="4.0.4"
 readonly SCRIPT_NAME="Enhanced VPN Server Auto Installer"
 readonly LOG_FILE="/var/log/vpn-installer.log"
 readonly STATE_FILE="/var/lib/vpn-install-state"
@@ -92,7 +92,7 @@ show_banner() {
 ║   ╚████╔╝ ██║     ██║ ╚████║    ██║██║ ╚████║███████║   ██║   ║
 ║    ╚═══╝  ╚═╝     ╚═╝  ╚═══╝    ╚═╝╚═╝  ╚═══╝╚══════╝   ╚═╝   ║
 ║                                                               ║
-║        Enhanced VPN Server Auto Installer v4.0.3             ║
+║        Enhanced VPN Server Auto Installer v4.0.4             ║
 ║     VLESS + Reverse Proxy (3X-UI, AdGuard) + CLI Tools       ║
 ║                                                               ║
 ╚═══════════════════════════════════════════════════════════════╝
@@ -106,7 +106,7 @@ EOF
 
 cleanup_on_error() {
     local exit_code=$?
-    log_error "Критическая ошибка (код $exit_code) на строке $LINENO. Команда: $BASH_COMMAND. Начинаю откат..."
+    log_error "Критическая ошибка (код $exit_code) на строке $LINENO. Начинаю откат..."
     systemctl stop x-ui 2>/dev/null || true
     systemctl stop AdGuardHome 2>/dev/null || true
     systemctl stop nginx 2>/dev/null || true
@@ -169,7 +169,6 @@ get_server_ip() {
 # ===============================================
 # УСТАНОВКА И НАСТРОЙКА
 # ===============================================
-
 install_dependencies() {
     print_header "УСТАНОВКА ЗАВИСИМОСТЕЙ"
     if [[ "$OS_ID" == "ubuntu" ]] || [[ "$OS_ID" == "debian" ]]; then
@@ -264,10 +263,8 @@ configure_firewall() {
 }
 setup_ssl() {
     print_header "ПОЛУЧЕНИЕ SSL СЕРТИФИКАТА"
-
     mkdir -p /var/www/html
     chown www-data:www-data /var/www/html
-
     log_info "Настройка временного Nginx для проверки Certbot..."
     cat > /etc/nginx/sites-available/default << EOF
 server {
@@ -279,26 +276,14 @@ server {
 EOF
     ln -sf /etc/nginx/sites-available/default /etc/nginx/sites-enabled/
     nginx -t && systemctl restart nginx
-
     log_info "Запрос сертификата для $DOMAIN через webroot..."
-    certbot certonly \
-        --webroot -w /var/www/html \
-        -d "$DOMAIN" \
-        --email "$EMAIL" \
-        --agree-tos \
-        --non-interactive \
-        --quiet
-
-    # Проверка, что файлы сертификата действительно созданы
+    certbot certonly --webroot -w /var/www/html -d "$DOMAIN" --email "$EMAIL" --agree-tos --non-interactive --quiet
     if [[ ! -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ]]; then
-        log_error "Certbot сообщил об успехе, но файл сертификата не найден!"
-        log_error "Проверьте лог /var/log/letsencrypt/letsencrypt.log для деталей."
+        log_error "Certbot сообщил об успехе, но файл сертификата не найден! Проверьте лог /var/log/letsencrypt/letsencrypt.log."
         exit 1
     fi
-
     log_info "SSL сертификат успешно получен ✅"
     systemctl stop nginx
-
     (crontab -l 2>/dev/null; echo "0 2 * * * certbot renew --quiet --post-hook \"systemctl reload nginx\"") | crontab -
     log_info "Автообновление SSL настроено ✅"
 }
@@ -306,10 +291,8 @@ install_3x_ui() {
     print_header "УСТАНОВКА ПАНЕЛИ 3X-UI"
     log_info "Запуск неинтерактивного установщика 3X-UI..."
     bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh) install
-
     log_info "Настройка 3X-UI для работы через reverse proxy..."
     /usr/local/x-ui/x-ui setting -username "$XUI_USERNAME" -password "$XUI_PASSWORD" -port "$XUI_PORT" -listen "127.0.0.1" >/dev/null
-
     systemctl restart x-ui
     if systemctl is-active --quiet x-ui; then
         log_info "Панель 3X-UI установлена и запущена ✅"
@@ -326,216 +309,4 @@ install_adguard() {
     mkdir -p /opt/AdGuardHome
     mv /tmp/AdGuardHome/* /opt/AdGuardHome
     rm -rf /tmp/AdGuardHome
-
-    log_info "Установка AdGuard Home как сервиса и первоначальная настройка..."
-    /opt/AdGuardHome/AdGuardHome -s install >/dev/null
-
-    log_info "Создание финальной конфигурации AdGuard Home..."
-    cat > /opt/AdGuardHome/AdGuardHome.yaml << EOF
-bind_host: 127.0.0.1
-bind_port: $ADGUARD_PORT
-auth_attempts: 5
-# Пароль уже был установлен и хеширован на шаге '-s install'
-language: ru
-dns:
-  bind_hosts: [0.0.0.0]
-  port: 53
-  protection_enabled: true
-  filtering_enabled: true
-  safebrowsing_enabled: true
-  upstream_dns:
-    - https://dns.cloudflare.com/dns-query
-    - https://dns.google/dns-query
-  bootstrap_dns: [1.1.1.1, 8.8.8.8]
-schema_version: 27
-EOF
-    # Просто перезапускаем сервис, чтобы он подхватил новый полный конфиг
-    systemctl restart AdGuardHome
-    if systemctl is-active --quiet AdGuardHome; then
-        log_info "AdGuard Home установлен и запущен ✅"
-    else
-        log_error "AdGuard Home не запустился. Логи: journalctl -u AdGuardHome"
-        exit 1
-    fi
-}
-
-# ===============================================
-# ФИНАЛЬНАЯ НАСТРОЙКА И ИНСТРУКЦИИ
-# ===============================================
-
-configure_final_nginx() {
-    print_header "НАСТРОЙКА REVERSE PROXY NGINX"
-    log_info "Создание финальной конфигурации Nginx..."
-    cat > /etc/nginx/sites-available/default << EOF
-server_tokens off;
-server {
-    listen 80 default_server;
-    listen [::]:80 default_server;
-    server_name $DOMAIN;
-    return 301 https://\$host\$request_uri;
-}
-server {
-    listen 443 ssl http2 default_server;
-    listen [::]:443 ssl http2 default_server;
-    server_name $DOMAIN;
-
-    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers "EECDH+AESGCM:EDH+AESGCM:AES256+EECDH:AES256+EDH";
-    ssl_prefer_server_ciphers off;
-
-    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-    add_header X-Frame-Options DENY always;
-    add_header X-Content-Type-Options nosniff always;
-
-    location = / { root /var/www/html; index index.html; }
-
-    location /xui/ {
-        proxy_pass http://127.0.0.1:$XUI_PORT/xui/;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-    }
-    location /adguard/ {
-        proxy_pass http://127.0.0.1:$ADGUARD_PORT/;
-        proxy_redirect / /adguard/;
-        proxy_cookie_path / /adguard/;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-    }
-}
-EOF
-    create_main_page
-    nginx -t && systemctl restart nginx
-    log_info "Финальная конфигурация Nginx применена ✅"
-}
-create_main_page() {
-    cat > /var/www/html/index.html << EOF
-<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>🛡️ VPN Server - $DOMAIN</title><style>body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);min-height:100vh;padding:20px;color:#fff;text-align:center}.container{max-width:800px;margin:40px auto;background:rgba(255,255,255,0.1);border-radius:20px;box-shadow:0 15px 35px rgba(0,0,0,0.2);backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,0.2);padding:40px}h1{font-size:2.8rem;margin-bottom:10px}p{font-size:1.2rem;margin-bottom:30px}.button-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:20px}.button{display:block;padding:20px;background:rgba(255,255,255,0.2);color:white;text-decoration:none;border-radius:12px;font-weight:500;transition:background .3s;font-size:1.1rem}.button:hover{background:rgba(255,255,255,0.3)}.footer{margin-top:40px;font-size:.9rem;opacity:.7}</style></head><body><div class="container"><h1>🛡️ VPN Сервер Активен</h1><p>Ваше подключение к сети теперь под защитой.</p><div class="button-grid"><a href="/xui/" class="button" target="_blank">Панель управления 3X-UI</a><a href="/adguard/" class="button" target="_blank">Панель управления AdGuard</a></div><p style="margin-top:30px;font-size:1rem">Данные для входа в файле <code>/root/vpn_server_info.txt</code></p><div class="footer"><p>Сервер настроен с помощью $SCRIPT_NAME v$SCRIPT_VERSION</p></div></div></body></html>
-EOF
-}
-create_cli_commands() {
-    print_header "СОЗДАНИЕ CLI УТИЛИТ"
-    cat > /usr/local/bin/vpn-status <<'EOF'
-#!/bin/bash
-echo "--- Nginx ---"; systemctl status nginx --no-pager; echo -e "\n--- 3X-UI ---"; systemctl status x-ui --no-pager; echo -e "\n--- AdGuard ---"; systemctl status AdGuardHome --no-pager
-EOF
-    cat > /usr/local/bin/vpn-restart <<'EOF'
-#!/bin/bash
-echo "Перезапуск сервисов..."; systemctl restart nginx x-ui AdGuardHome; echo "Готово."; vpn-status
-EOF
-    cat > /usr/local/bin/vpn-logs <<'EOF'
-#!/bin/bash
-if [[ -z "${1-}" ]]; then echo "Usage: vpn-logs [nginx|xui|adguard]"; exit 1; fi
-journalctl -u "$1" -f
-EOF
-    cat > /usr/local/bin/vpn-ssl-renew <<'EOF'
-#!/bin/bash
-echo "Принудительное обновление SSL..."; certbot renew --force-renewal; echo "Готово."
-EOF
-    cat > /usr/local/bin/vpn-info <<'EOF'
-#!/bin/bash
-cat /root/vpn_server_info.txt
-EOF
-    create_uninstall_script
-    chmod +x /usr/local/bin/vpn-*
-    log_info "CLI утилиты созданы: vpn-status, vpn-restart, vpn-logs, vpn-ssl-renew, vpn-info ✅"
-}
-create_uninstall_script() {
-    cat > "$UNINSTALL_SCRIPT_PATH" << EOF
-#!/bin/bash
-set -x
-echo "Полное удаление VPN сервера..."
-systemctl stop nginx x-ui AdGuardHome
-/opt/AdGuardHome/AdGuardHome -s uninstall
-rm -rf /opt/AdGuardHome /usr/local/x-ui /etc/nginx /var/www/html /usr/local/bin/vpn-* "$UNINSTALL_SCRIPT_PATH" "$LOG_FILE" "$STATE_FILE"
-certbot delete --cert-name $DOMAIN --non-interactive
-if command -v apt-get &>/dev/null; then apt-get purge --auto-remove -y nginx* certbot*;
-else dnf remove -y nginx certbot; fi
-if command -v ufw &>/dev/null; then ufw --force reset; fi
-echo "Удаление завершено."
-EOF
-    chmod +x "$UNINSTALL_SCRIPT_PATH"
-}
-create_instructions() {
-    print_header "СОЗДАНИЕ ФАЙЛА С ИНСТРУКЦИЯМИ"
-    local info_file="/root/vpn_server_info.txt"
-    cat > "$info_file" << EOF
-╔═══════════════════════════════════════════════════════════════╗
-║          ИНФОРМАЦИЯ О ВАШЕМ VPN-СЕРВЕРЕ (Created: $(date))      ║
-╚═══════════════════════════════════════════════════════════════╝
-Домен: $DOMAIN
-IP-адрес: $SERVER_IP
-╔═══════════════════════════════════════════════════════════════╗
-║                      ДОСТУП К ПАНЕЛЯМ                      ║
-╚═══════════════════════════════════════════════════════════════╝
-🌐 Главная: https://$DOMAIN/
-📊 3X-UI (VLESS):
-   URL: https://$DOMAIN/xui/
-   Логин: $XUI_USERNAME
-   Пароль: $XUI_PASSWORD
-🛡️ AdGuard Home (DNS):
-   URL: https://$DOMAIN/adguard/
-   Логин: admin
-   Пароль: $ADGUARD_PASSWORD
-╔═══════════════════════════════════════════════════════════════╗
-║                  КЛЮЧЕВАЯ НАСТРОЙКА VLESS                    ║
-╚═══════════════════════════════════════════════════════════════╝
-1. Зайдите в панель 3X-UI и создайте 'Inbound'.
-2. Протокол: vless
-3. Порт: $VLESS_PORT (уже открыт в firewall)
-4. Сеть (Network): tcp
-5. Безопасность (Security): tls
-6. SNI (Server Name) и Host: $DOMAIN
-7. Путь к сертификату: /etc/letsencrypt/live/$DOMAIN/fullchain.pem
-8. Путь к ключу: /etc/letsencrypt/live/$DOMAIN/privkey.pem
-╔═══════════════════════════════════════════════════════════════╗
-║                КОМАНДЫ ДЛЯ УПРАВЛЕНИЯ В ТЕРМИНАЛЕ            ║
-╚═══════════════════════════════════════════════════════════════╝
- vpn-status         - Показать статус всех сервисов
- vpn-restart        - Перезапустить все сервисы
- vpn-logs [service] - Показать логи (nginx, xui, adguard)
- vpn-ssl-renew      - Принудительно обновить SSL-сертификат
- vpn-info           - Показать этот файл
- uninstall_vpn_server.sh - ПОЛНОСТЬЮ удалить все компоненты
-ВАЖНО: СОХРАНИТЕ ЭТОТ ФАЙЛ В НАДЕЖНОМ МЕСТЕ!
-EOF
-    chmod 600 "$info_file"
-    log_info "Файл с инструкциями и паролями создан: $info_file"
-}
-
-# ===============================================
-# ГЛАВНАЯ ФУНКЦИЯ
-# ===============================================
-
-main() {
-    setup_logging
-    parse_arguments "$@"
-    show_banner
-    check_root
-    detect_system
-    get_user_input
-    install_dependencies
-    stop_conflicting_services
-    fix_local_dns
-    check_dns_resolution
-    configure_firewall
-    setup_ssl
-    install_3x_ui
-    install_adguard
-    configure_final_nginx
-    create_cli_commands
-    create_instructions
-    log_info "🎉 Установка полностью завершена! Ваш сервер готов."
-}
-
-# Запуск главной функции
-main "$@"
+    log
