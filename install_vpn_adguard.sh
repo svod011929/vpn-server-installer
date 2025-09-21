@@ -9,9 +9,9 @@
 #
 # DESCRIPTION: Автоматическая установка и настройка VPN-сервера.
 #
-#      АВТОР: KodoDrive
-#     ВЕРСИЯ: 4.0.4 (Исправлена ошибка 'command not found' для parse_arguments)
-#    СОЗДАНО: $(date)
+#      AUTHOR: Написано Gemini на основе предоставленных требований.
+#     VERSION: 4.0.3 (Исправлен метод получения SSL на webroot, улучшен вызов 3x-ui)
+#     CREATED: $(date)
 #
 # =====================================================================================
 
@@ -21,7 +21,7 @@ set -euo pipefail
 # ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ И КОНСТАНТЫ
 # ===============================================
 
-readonly SCRIPT_VERSION="4.0.4"
+readonly SCRIPT_VERSION="4.0.3"
 readonly SCRIPT_NAME="Enhanced VPN Server Auto Installer"
 readonly LOG_FILE="/var/log/vpn-installer.log"
 readonly STATE_FILE="/var/lib/vpn-install-state"
@@ -92,7 +92,7 @@ show_banner() {
 ║   ╚████╔╝ ██║     ██║ ╚████║    ██║██║ ╚████║███████║   ██║   ║
 ║    ╚═══╝  ╚═╝     ╚═╝  ╚═══╝    ╚═╝╚═╝  ╚═══╝╚══════╝   ╚═╝   ║
 ║                                                               ║
-║        Enhanced VPN Server Auto Installer v4.0.4             ║
+║        Enhanced VPN Server Auto Installer v4.0.3             ║
 ║     VLESS + Reverse Proxy (3X-UI, AdGuard) + CLI Tools       ║
 ║                                                               ║
 ╚═══════════════════════════════════════════════════════════════╝
@@ -289,6 +289,7 @@ EOF
         --non-interactive \
         --quiet
 
+    # Проверка, что файлы сертификата действительно созданы
     if [[ ! -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ]]; then
         log_error "Certbot сообщил об успехе, но файл сертификата не найден!"
         log_error "Проверьте лог /var/log/letsencrypt/letsencrypt.log для деталей."
@@ -334,6 +335,7 @@ install_adguard() {
 bind_host: 127.0.0.1
 bind_port: $ADGUARD_PORT
 auth_attempts: 5
+# Пароль уже был установлен и хеширован на шаге '-s install'
 language: ru
 dns:
   bind_hosts: [0.0.0.0]
@@ -347,6 +349,7 @@ dns:
   bootstrap_dns: [1.1.1.1, 8.8.8.8]
 schema_version: 27
 EOF
+    # Просто перезапускаем сервис, чтобы он подхватил новый полный конфиг
     systemctl restart AdGuardHome
     if systemctl is-active --quiet AdGuardHome; then
         log_info "AdGuard Home установлен и запущен ✅"
@@ -375,15 +378,19 @@ server {
     listen 443 ssl http2 default_server;
     listen [::]:443 ssl http2 default_server;
     server_name $DOMAIN;
+
     ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers "EECDH+AESGCM:EDH+AESGCM:AES256+EECDH:AES256+EDH";
     ssl_prefer_server_ciphers off;
+
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
     add_header X-Frame-Options DENY always;
     add_header X-Content-Type-Options nosniff always;
+
     location = / { root /var/www/html; index index.html; }
+
     location /xui/ {
         proxy_pass http://127.0.0.1:$XUI_PORT/xui/;
         proxy_set_header Host \$host;
@@ -506,39 +513,8 @@ EOF
 }
 
 # ===============================================
-# ОБРАБОТКА АРГУМЕНТОВ И ГЛАВНАЯ ФУНКЦИЯ
+# ГЛАВНАЯ ФУНКЦИЯ
 # ===============================================
-
-show_help() {
-    echo "$SCRIPT_NAME v$SCRIPT_VERSION"
-    echo "Использование: bash $0 [флаги]"
-    echo ""
-    echo "Флаги:"
-    echo "  --domain DOMAIN          Обязательно. Доменное имя сервера."
-    echo "  --email EMAIL            Обязательно. Email для SSL-сертификата."
-    echo "  --xui-password PWD       Пароль для 3X-UI. Если не указан, генерируется."
-    echo "  --adguard-password PWD   Пароль для AdGuard. Если не указан, генерируется."
-    echo "  --auto-password          Сгенерировать все пароли без запроса."
-    echo "  --auto-confirm           Пропустить все подтверждения (полностью автоматический режим)."
-    echo "  --help                   Показать эту справку."
-}
-
-parse_arguments() {
-    while [[ $# -gt 0 ]]; do
-        case $1 in
-            --domain) DOMAIN="$2"; shift 2 ;;
-            --email) EMAIL="$2"; shift 2 ;;
-            --xui-password) XUI_PASSWORD="$2"; shift 2 ;;
-            --adguard-password) ADGUARD_PASSWORD="$2"; shift 2 ;;
-            --vless-port) VLESS_PORT="$2"; shift 2 ;;
-            --auto-password) AUTO_PASSWORD=true; shift ;;
-            --auto-confirm) AUTO_CONFIRM=true; shift ;;
-            --debug) DEBUG_MODE=true; shift ;;
-            --help) show_help; exit 0 ;;
-            *) log_error "Неизвестный флаг: $1"; show_help; exit 1 ;;
-        esac
-    done
-}
 
 main() {
     setup_logging
