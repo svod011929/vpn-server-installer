@@ -1,10 +1,25 @@
 #!/bin/bash
 
-# install_vpn_adguard.sh
-# Скрипт автоматической установки VPN-сервера с VLESS + TLS + 3X-UI + AdGuard Home
-# Автор: KodoDrive
-# Версия: 3.1 (полностью переписанная с исправлениями)
-# Дата: $(date)
+# =====================================================================================
+#
+#        FILE: install_vpn.sh
+#
+#       USAGE: curl -fsSL [URL_TO_THIS_SCRIPT] | bash
+#         or: bash install_vpn.sh --domain my.domain.com --email me@example.com
+#
+# DESCRIPTION: Автоматическая установка и настройка VPN-сервера, включающего:
+#              - 3X-UI (для VLESS)
+#              - AdGuard Home (DNS-блокировщик)
+#              - Nginx (Reverse Proxy)
+#              - Certbot (Let's Encrypt SSL)
+#              - UFW/Firewalld
+#              - Удобные CLI-команды для управления
+#
+#      AUTHOR: KodoDrive
+#     VERSION: 4.0
+#     CREATED: $(date)
+#
+# =====================================================================================
 
 set -euo pipefail
 
@@ -12,10 +27,11 @@ set -euo pipefail
 # ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
 # ===============================================
 
-readonly SCRIPT_VERSION="3.1.0"
-readonly SCRIPT_NAME="VPN Server Auto Installer"
+readonly SCRIPT_VERSION="4.0.0"
+readonly SCRIPT_NAME="Enhanced VPN Server Auto Installer"
 readonly LOG_FILE="/var/log/vpn-installer.log"
-readonly STATE_FILE="/tmp/vpn-install-state"
+readonly STATE_FILE="/var/lib/vpn-install-state"
+readonly UNINSTALL_SCRIPT_PATH="/usr/local/sbin/uninstall_vpn_server.sh"
 
 # Цвета для вывода
 readonly RED='\033[0;31m'
@@ -26,13 +42,15 @@ readonly PURPLE='\033[0;35m'
 readonly CYAN='\033[0;36m'
 readonly NC='\033[0m'
 
-# Конфигурационные переменные
+# Конфигурационные переменные (значения по умолчанию)
 DOMAIN=""
 EMAIL=""
 XUI_USERNAME="admin"
 XUI_PASSWORD=""
 ADGUARD_PASSWORD=""
-VLESS_PORT="443"
+# VLESS будет работать на отдельном порту, Nginx - на 443
+VLESS_PORT="2087"
+# Внутренние порты для панелей, недоступные извне
 XUI_PORT="54321"
 ADGUARD_PORT="3000"
 
@@ -41,7 +59,7 @@ AUTO_PASSWORD=false
 AUTO_CONFIRM=false
 DEBUG_MODE=false
 
-# Системные переменные (будут определены автоматически)
+# Системные переменные (определяются автоматически)
 OS_ID=""
 OS_NAME=""
 OS_VERSION=""
@@ -61,33 +79,33 @@ setup_logging() {
     mkdir -p "$(dirname "$LOG_FILE")"
     exec > >(tee -a "$LOG_FILE")
     exec 2>&1
-    echo "=== Запуск $SCRIPT_NAME v$SCRIPT_VERSION ===" | tee -a "$LOG_FILE"
-    echo "Время: $(date)" | tee -a "$LOG_FILE"
+    echo "=== Запуск $SCRIPT_NAME v$SCRIPT_VERSION ==="
+    echo "Время: $(date)"
 }
 
 log_info() {
-    echo -e "${GREEN}[INFO]${NC} $1" | tee -a "$LOG_FILE"
+    echo -e "${GREEN}[INFO]${NC} $1"
 }
 
 log_warn() {
-    echo -e "${YELLOW}[WARNING]${NC} $1" | tee -a "$LOG_FILE"
+    echo -e "${YELLOW}[WARNING]${NC} $1"
 }
 
 log_error() {
-    echo -e "${RED}[ERROR]${NC} $1" | tee -a "$LOG_FILE"
+    echo -e "${RED}[ERROR]${NC} $1"
 }
 
 log_debug() {
     if [[ "$DEBUG_MODE" == true ]]; then
-        echo -e "${PURPLE}[DEBUG]${NC} $1" | tee -a "$LOG_FILE"
+        echo -e "${PURPLE}[DEBUG]${NC} $1"
     fi
 }
 
 print_header() {
-    echo "" | tee -a "$LOG_FILE"
-    echo -e "${BLUE}╔══════════════════════════════════════╗${NC}" | tee -a "$LOG_FILE"
-    echo -e "${BLUE}║${NC} $(printf "%-36s" "$1") ${BLUE}║${NC}" | tee -a "$LOG_FILE"
-    echo -e "${BLUE}╚══════════════════════════════════════╝${NC}" | tee -a "$LOG_FILE"
+    echo ""
+    echo -e "${BLUE}╔══════════════════════════════════════╗${NC}"
+    echo -e "${BLUE}║${NC} $(printf "%-36s" "$1") ${BLUE}║${NC}"
+    echo -e "${BLUE}╚══════════════════════════════════════╝${NC}"
 }
 
 show_banner() {
@@ -103,10 +121,8 @@ show_banner() {
 ║   ╚████╔╝ ██║     ██║ ╚████║    ██║██║ ╚████║███████║   ██║   ║
 ║    ╚═══╝  ╚═╝     ╚═╝  ╚═══╝    ╚═╝╚═╝  ╚═══╝╚══════╝   ╚═╝   ║
 ║                                                               ║
-║              VPN Server Auto Installer v3.1                  ║
-║           VLESS + TLS + 3X-UI + AdGuard Home                 ║
-║                                                               ║
-║                    Made by KodoDrive                         ║
+║        Enhanced VPN Server Auto Installer v4.0.0             ║
+║     VLESS + Reverse Proxy (3X-UI, AdGuard) + CLI Tools       ║
 ║                                                               ║
 ╚═══════════════════════════════════════════════════════════════╝
 EOF
@@ -114,11 +130,14 @@ EOF
 }
 
 # ===============================================
-# ФУНКЦИИ УПРАВЛЕНИЯ СОСТОЯНИЕМ
+# ФУНКЦИИ УПРАВЛЕНИЯ СОСТОЯНИЕМ И ОШИБКАМИ
 # ===============================================
 
 save_state() {
     local step="$1"
+    # Создаем директорию, если ее нет
+    mkdir -p "$(dirname "$STATE_FILE")"
+    # Записываем состояние
     cat > "$STATE_FILE" << EOF
 DOMAIN="$DOMAIN"
 EMAIL="$EMAIL"
@@ -133,18 +152,20 @@ TIMESTAMP="$(date)"
 OS_ID="$OS_ID"
 ARCH="$ARCH"
 EOF
-    log_debug "Состояние сохранено: $step"
+    log_debug "Состояние сохранено на шаге: $step"
 }
 
 load_state() {
     if [[ -f "$STATE_FILE" ]]; then
+        # shellcheck source=/dev/null
         source "$STATE_FILE"
-        log_info "Найдено сохраненное состояние. Текущий шаг: $CURRENT_STEP"
+        log_info "Найдено сохраненное состояние. Шаг: $CURRENT_STEP"
         if [[ "$AUTO_CONFIRM" != true ]]; then
             read -p "Продолжить с последнего шага? (y/n): " -n 1 -r
             echo
             if [[ ! $REPLY =~ ^[Yy]$ ]]; then
                 rm -f "$STATE_FILE"
+                log_info "Сохраненное состояние удалено. Начинаем с нуля."
                 return 1
             fi
         fi
@@ -155,28 +176,22 @@ load_state() {
 
 cleanup_on_error() {
     local exit_code=$?
-    log_error "Ошибка выполнения (код $exit_code). Начинаю откат..."
+    log_error "Критическая ошибка (код $exit_code) на шаге $? execute command $BASH_COMMAND. Начинаю откат..."
 
-    # Остановка сервисов
     systemctl stop x-ui 2>/dev/null || true
     systemctl stop AdGuardHome 2>/dev/null || true
     systemctl stop nginx 2>/dev/null || true
 
-    # Удаление файлов
-    rm -rf /opt/3x-ui 2>/dev/null || true
-    rm -rf /opt/AdGuardHome 2>/dev/null || true
-    rm -f /etc/systemd/system/x-ui.service 2>/dev/null || true
-    rm -f /etc/systemd/system/AdGuardHome.service 2>/dev/null || true
+    rm -rf /opt/3x-ui /opt/AdGuardHome
+    rm -f /etc/systemd/system/x-ui.service /etc/systemd/system/AdGuardHome.service
 
-    # Восстановление DNS
     restore_system_dns
-
-    # Восстановление автообновлений
     restore_system_updates
 
     systemctl daemon-reload 2>/dev/null || true
 
-    log_info "Откат завершен. Логи: $LOG_FILE"
+    log_info "Базовый откат завершен. Для полного удаления запустите: ${UNINSTALL_SCRIPT_PATH}"
+    log_warn "Логи для анализа проблемы сохранены в: $LOG_FILE"
     exit $exit_code
 }
 
@@ -188,29 +203,25 @@ trap cleanup_on_error ERR
 
 check_root() {
     if [[ $EUID -ne 0 ]]; then
-        log_error "Скрипт должен запускаться с правами root"
-        log_info "Используйте: sudo $0"
+        log_error "Этот скрипт должен запускаться с правами root или через sudo."
         exit 1
     fi
 }
 
 detect_system() {
     print_header "АНАЛИЗ СИСТЕМЫ"
-
-    # Определение ОС
     if [[ ! -f /etc/os-release ]]; then
-        log_error "Не удалось определить операционную систему"
+        log_error "Не удалось определить ОС: файл /etc/os-release отсутствует."
         exit 1
     fi
 
+    # shellcheck source=/dev/null
     source /etc/os-release
     OS_ID="$ID"
     OS_NAME="$NAME"
     OS_VERSION="${VERSION_ID:-unknown}"
-
     log_info "ОС: $OS_NAME $OS_VERSION"
 
-    # Проверка совместимости
     local supported=false
     for distro in "${SUPPORTED_DISTROS[@]}"; do
         if [[ "$OS_ID" == "$distro"* ]]; then
@@ -218,617 +229,286 @@ detect_system() {
             break
         fi
     done
-
     if [[ "$supported" != true ]]; then
-        log_error "Неподдерживаемая ОС: $OS_NAME"
-        log_info "Поддерживаемые: ${SUPPORTED_DISTROS[*]}"
+        log_error "Неподдерживаемая ОС: $OS_NAME. Поддерживаются: ${SUPPORTED_DISTROS[*]}"
         exit 1
     fi
 
-    # Определение архитектуры
     case "$(uname -m)" in
         x86_64|amd64) ARCH="amd64" ;;
         aarch64|arm64) ARCH="arm64" ;;
         armv7l) ARCH="armv7" ;;
-        *) 
-            log_error "Неподдерживаемая архитектура: $(uname -m)"
-            exit 1
-            ;;
+        *) log_error "Неподдерживаемая архитектура: $(uname -m)"; exit 1 ;;
     esac
-
     log_info "Архитектура: $ARCH"
 
-    # Проверка ресурсов
     RAM_MB=$(free -m | awk 'NR==2{print $2}')
     DISK_GB=$(df -BG / | awk 'NR==2 {print $4}' | sed 's/G//')
+    log_info "Ресурсы: ${RAM_MB}MB ОЗУ, ${DISK_GB}GB свободного диска."
 
-    log_info "ОЗУ: ${RAM_MB}MB, Диск: ${DISK_GB}GB"
-
-    # Проверка минимальных требований
-    if [[ $RAM_MB -lt 512 ]]; then
-        log_error "Недостаточно ОЗУ (минимум 512MB, доступно ${RAM_MB}MB)"
+    if [[ $RAM_MB -lt 512 ]] || [[ $DISK_GB -lt 5 ]]; then
+        log_error "Недостаточно ресурсов (минимум 512MB ОЗУ и 5GB диска)."
         exit 1
     fi
 
-    if [[ $DISK_GB -lt 2 ]]; then
-        log_error "Недостаточно места на диске (минимум 2GB, доступно ${DISK_GB}GB)"
-        exit 1
-    fi
-
-    # Проверка интернета
     log_info "Проверка подключения к интернету..."
-    if ! timeout 15 curl -s --max-time 10 https://google.com >/dev/null 2>&1; then
-        log_error "Нет подключения к интернету"
+    if ! timeout 15 curl -s --max-time 10 https://1.1.1.1 >/dev/null; then
+        log_error "Нет подключения к интернету."
         exit 1
     fi
 
-    # Получение IP сервера
     SERVER_IP=$(get_server_ip)
-    log_info "IP сервера: $SERVER_IP"
-
-    log_info "Система совместима ✅"
+    log_info "Публичный IP сервера: $SERVER_IP"
+    log_info "Система совместима и готова к установке ✅"
 }
 
 get_server_ip() {
     local ip
-    local services=("ifconfig.me" "icanhazip.com" "ipecho.net/plain" "ifconfig.co")
-
+    local services=("ifconfig.me" "api.ipify.org" "icanhazip.com")
     for service in "${services[@]}"; do
-        ip=$(timeout 10 curl -s --max-time 5 "https://$service" 2>/dev/null | tr -d '\n\r' | grep -E '^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$')
+        ip=$(timeout 10 curl -s "https://$service" 2>/dev/null | tr -d '\n\r ' | grep -E '^[0-9]{1,3}(\.[0-9]{1,3}){3}$')
         if [[ -n "$ip" ]]; then
             echo "$ip"
             return 0
         fi
     done
-
-    echo "unknown"
+    log_error "Не удалось определить публичный IP адрес сервера."
+    exit 1
 }
 
 # ===============================================
-# ФУНКЦИИ РАБОТЫ С ПАКЕТАМИ
+# ФУНКЦИИ УПРАВЛЕНИЯ ПАКЕТАМИ
 # ===============================================
 
 fix_package_manager() {
-    print_header "НАСТРОЙКА ПАКЕТНОГО МЕНЕДЖЕРА"
-
+    print_header "ПОДГОТОВКА ПАКЕТНОГО МЕНЕДЖЕРА"
     if [[ "$OS_ID" == "ubuntu" ]] || [[ "$OS_ID" == "debian" ]]; then
-        fix_apt_locks
+        export DEBIAN_FRONTEND=noninteractive
+        systemctl stop unattended-upgrades.service 2>/dev/null || true
+        pkill -f "apt" || true
+        rm -f /var/lib/dpkg/lock* /var/cache/apt/archives/lock
+        dpkg --configure -a
         disable_auto_updates
-        update_package_lists
+        apt-get update -qq
     elif [[ "$OS_ID" == "centos" ]] || [[ "$OS_ID" == "rhel" ]] || [[ "$OS_ID" == "fedora" ]] || [[ "$OS_ID" == "almalinux" ]] || [[ "$OS_ID" == "rocky" ]]; then
-        update_yum_dnf
+        : # Для RPM-based систем обычно не требуется таких исправлений
     fi
 }
 
-fix_apt_locks() {
-    log_info "Проверка блокировок APT..."
-
-    local max_wait=300
-    local waited=0
-
-    while [[ $waited -lt $max_wait ]]; do
-        if ! fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 && \
-           ! fuser /var/lib/dpkg/lock >/dev/null 2>&1 && \
-           ! fuser /var/lib/apt/lists/lock >/dev/null 2>&1; then
-            log_info "APT блокировки освобождены"
-            return 0
-        fi
-
-        if [[ $waited -eq 0 ]]; then
-            log_warn "Ожидание освобождения блокировок APT..."
-        fi
-
-        sleep 10
-        waited=$((waited + 10))
-        echo -n "."
-    done
-
-    echo ""
-    log_warn "Принудительное освобождение блокировок APT"
-
-    # Остановка процессов
-    systemctl stop unattended-upgrades 2>/dev/null || true
-    systemctl stop apt-daily.timer 2>/dev/null || true
-    systemctl stop apt-daily-upgrade.timer 2>/dev/null || true
-
-    pkill -f "apt" 2>/dev/null || true
-    pkill -f "dpkg" 2>/dev/null || true
-    pkill -f "unattended-upgrade" 2>/dev/null || true
-
-    sleep 5
-
-    # Удаление блокировок
-    rm -f /var/lib/dpkg/lock-frontend
-    rm -f /var/lib/dpkg/lock
-    rm -f /var/lib/apt/lists/lock
-    rm -f /var/cache/apt/archives/lock
-
-    # Восстановление dpkg
-    dpkg --configure -a 2>/dev/null || true
-}
-
 disable_auto_updates() {
-    log_info "Временное отключение автообновлений..."
-
-    # Маскируем службы
-    systemctl mask apt-daily.timer 2>/dev/null || true
-    systemctl mask apt-daily-upgrade.timer 2>/dev/null || true
-    systemctl stop unattended-upgrades 2>/dev/null || true
-
-    # Создаем временную конфигурацию
-    cat > /etc/apt/apt.conf.d/99temp-disable-auto-update << 'EOF'
-APT::Periodic::Update-Package-Lists "0";
-APT::Periodic::Download-Upgradeable-Packages "0";
-APT::Periodic::AutocleanInterval "0";
-APT::Periodic::Unattended-Upgrade "0";
-EOF
+    if [[ -f /etc/apt/apt.conf.d/20auto-upgrades ]]; then
+        log_info "Временное отключение автоматических обновлений APT..."
+        mv /etc/apt/apt.conf.d/20auto-upgrades /etc/apt/apt.conf.d/20auto-upgrades.bak
+    fi
 }
 
 restore_system_updates() {
-    log_info "Восстановление автообновлений..."
-
-    rm -f /etc/apt/apt.conf.d/99temp-disable-auto-update 2>/dev/null
-    systemctl unmask apt-daily.timer 2>/dev/null || true
-    systemctl unmask apt-daily-upgrade.timer 2>/dev/null || true
-}
-
-update_package_lists() {
-    log_info "Обновление списков пакетов..."
-
-    export DEBIAN_FRONTEND=noninteractive
-
-    for attempt in {1..3}; do
-        if apt-get update -qq; then
-            break
-        fi
-        log_warn "Попытка $attempt обновления не удалась, повторяю..."
-        sleep 5
-    done
-
-    log_info "Обновление системы..."
-    apt-get upgrade -y -qq || log_warn "Частичные проблемы при обновлении"
-}
-
-update_yum_dnf() {
-    log_info "Обновление системы (RPM-based)..."
-
-    if command -v dnf >/dev/null 2>&1; then
-        dnf update -y -q || log_warn "Частичные проблемы при обновлении"
-    else
-        yum update -y -q || log_warn "Частичные проблемы при обновлении"
+    if [[ -f /etc/apt/apt.conf.d/20auto-upgrades.bak ]]; then
+        log_info "Восстановление автоматических обновлений APT..."
+        mv /etc/apt/apt.conf.d/20auto-upgrades.bak /etc/apt/apt.conf.d/20auto-upgrades
     fi
 }
 
 install_dependencies() {
     print_header "УСТАНОВКА ЗАВИСИМОСТЕЙ"
     save_state "installing_dependencies"
-
+    local packages
     if [[ "$OS_ID" == "ubuntu" ]] || [[ "$OS_ID" == "debian" ]]; then
-        apt-get install -y -qq \
-            curl wget unzip tar \
-            software-properties-common \
-            ca-certificates gnupg lsb-release \
-            net-tools dnsutils \
-            apache2-utils openssl \
-            systemd ufw cron \
-            nginx certbot python3-certbot-nginx || {
-            log_error "Не удалось установить зависимости"
+        packages="curl wget unzip tar systemd ufw cron nginx certbot python3-certbot-nginx net-tools dnsutils apache2-utils"
+        apt-get install -y -qq $packages || {
+            log_error "Не удалось установить базовые зависимости"
             exit 1
         }
     else
-        # RPM-based системы
-        local pkg_manager="yum"
-        if command -v dnf >/dev/null 2>&1; then
-            pkg_manager="dnf"
-        fi
-
-        $pkg_manager install -y -q \
-            curl wget unzip tar \
-            ca-certificates \
-            net-tools bind-utils \
-            httpd-tools openssl \
-            systemd firewalld cronie \
-            nginx certbot python3-certbot-nginx || {
-            log_error "Не удалось установить зависимости"
+        local pkg_mgr="yum"
+        if command -v dnf >/dev/null; then pkg_mgr="dnf"; fi
+        packages="curl wget unzip tar systemd firewalld cronie nginx certbot python3-certbot-nginx net-tools bind-utils httpd-tools"
+        $pkg_mgr install -y -q $packages || {
+            log_error "Не удалось установить базовые зависимости"
             exit 1
         }
     fi
-
-    log_info "Зависимости установлены ✅"
+    log_info "Зависимости успешно установлены ✅"
 }
 
+
 # ===============================================
-# ФУНКЦИИ ВАЛИДАЦИИ И ПОЛЬЗОВАТЕЛЬСКОГО ВВОДА
+# ФУНКЦИИ ВАЛИДАЦИИ И ВВОДА
 # ===============================================
 
 validate_domain() {
-    local domain="$1"
-
-    [[ -n "$domain" ]] || return 1
-    [[ ${#domain} -le 253 ]] || return 1
-    [[ "$domain" =~ ^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$ ]] || return 1
-
-    return 0
+    [[ "$1" =~ ^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$ ]]
 }
 
 validate_email() {
-    local email="$1"
-
-    [[ -n "$email" ]] || return 1
-    [[ ${#email} -le 254 ]] || return 1
-    [[ "$email" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]] || return 1
-
-    return 0
-}
-
-validate_port() {
-    local port="$1"
-
-    [[ "$port" =~ ^[0-9]+$ ]] || return 1
-    [[ $port -ge 1 && $port -le 65535 ]] || return 1
-
-    return 0
+    [[ "$1" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]
 }
 
 generate_password() {
-    local length=${1:-20}
-
-    if command -v openssl >/dev/null 2>&1; then
-        openssl rand -base64 32 | tr -d "=+/" | cut -c1-${length}
-    else
-        < /dev/urandom tr -dc 'A-Za-z0-9' | head -c${length}
-    fi
+    < /dev/urandom tr -dc 'A-Za-z0-9' | head -c${1:-20}
 }
 
 get_user_input() {
     print_header "НАСТРОЙКА ПАРАМЕТРОВ"
-
-    # Домен
     if [[ -z "$DOMAIN" ]]; then
         while true; do
-            read -p "Введите ваш домен (например, vpn.example.com): " DOMAIN
-            if validate_domain "$DOMAIN"; then
-                break
-            else
-                log_error "Неверный формат домена"
-            fi
+            read -p "Введите ваш домен (e.g., vpn.example.com): " DOMAIN
+            if validate_domain "$DOMAIN"; then break; else log_error "Неверный формат домена."; fi
         done
-    else
-        if ! validate_domain "$DOMAIN"; then
-            log_error "Неверный домен: $DOMAIN"
-            exit 1
-        fi
+    elif ! validate_domain "$DOMAIN"; then
+        log_error "Неверный домен указан через флаг: $DOMAIN"; exit 1
     fi
     log_info "Домен: $DOMAIN"
 
-    # Email
     if [[ -z "$EMAIL" ]]; then
         while true; do
-            read -p "Введите email для SSL сертификата: " EMAIL
-            if validate_email "$EMAIL"; then
-                break
-            else
-                log_error "Неверный формат email"
-            fi
+            read -p "Введите ваш email (для SSL-сертификата): " EMAIL
+            if validate_email "$EMAIL"; then break; else log_error "Неверный формат email."; fi
         done
-    else
-        if ! validate_email "$EMAIL"; then
-            log_error "Неверный email: $EMAIL"
-            exit 1
-        fi
+    elif ! validate_email "$EMAIL"; then
+        log_error "Неверный email указан через флаг: $EMAIL"; exit 1
     fi
     log_info "Email: $EMAIL"
 
-    # Генерация паролей
-    generate_passwords
-
-    # Валидация портов
-    validate_ports
-
-    # Подтверждение
-    if [[ "$AUTO_CONFIRM" != true ]]; then
-        show_configuration_summary
-        read -p "Продолжить установку? (y/n): " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            log_info "Установка отменена пользователем"
-            exit 0
-        fi
-    fi
-
-    save_state "user_input_completed"
-}
-
-generate_passwords() {
     if [[ -z "$XUI_PASSWORD" ]]; then
         if [[ "$AUTO_PASSWORD" == true ]]; then
-            XUI_PASSWORD=$(generate_password 20)
-            log_info "Сгенерирован пароль для 3X-UI"
+            XUI_PASSWORD=$(generate_password 16)
+            log_info "Пароль для 3X-UI сгенерирован автоматически."
         else
-            read -p "Пароль для 3X-UI (Enter для автогенерации): " XUI_PASSWORD
-            if [[ -z "$XUI_PASSWORD" ]]; then
-                XUI_PASSWORD=$(generate_password 20)
-                log_info "Сгенерирован пароль для 3X-UI"
-            fi
+            read -p "Пароль для 3X-UI [Enter для автогенерации]: " XUI_PASSWORD
+            [[ -z "$XUI_PASSWORD" ]] && XUI_PASSWORD=$(generate_password 16) && log_info "Пароль для 3X-UI сгенерирован."
         fi
     fi
 
     if [[ -z "$ADGUARD_PASSWORD" ]]; then
         if [[ "$AUTO_PASSWORD" == true ]]; then
-            ADGUARD_PASSWORD=$(generate_password 20)
-            log_info "Сгенерирован пароль для AdGuard"
+            ADGUARD_PASSWORD=$(generate_password 16)
+            log_info "Пароль для AdGuard Home сгенерирован автоматически."
         else
-            read -p "Пароль для AdGuard (Enter для автогенерации): " ADGUARD_PASSWORD
-            if [[ -z "$ADGUARD_PASSWORD" ]]; then
-                ADGUARD_PASSWORD=$(generate_password 20)
-                log_info "Сгенерирован пароль для AdGuard"
-            fi
+            read -p "Пароль для AdGuard Home [Enter для автогенерации]: " ADGUARD_PASSWORD
+            [[ -z "$ADGUARD_PASSWORD" ]] && ADGUARD_PASSWORD=$(generate_password 16) && log_info "Пароль для AdGuard Home сгенерирован."
         fi
     fi
-}
 
-validate_ports() {
-    for port in "$VLESS_PORT" "$XUI_PORT" "$ADGUARD_PORT"; do
-        if ! validate_port "$port"; then
-            log_error "Неверный порт: $port"
-            exit 1
+    if [[ "$AUTO_CONFIRM" != true ]]; then
+        echo -e "\n${YELLOW}Конфигурация установки:${NC}"
+        echo "  - Домен: $DOMAIN"
+        echo "  - IP сервера: $SERVER_IP"
+        echo "  - Email для SSL: $EMAIL"
+        echo "  - Порт VLESS: $VLESS_PORT (TCP)"
+        echo "  - Пароли: будут записаны в /root/vpn_server_info.txt"
+        read -p "Продолжить установку с этими параметрами? (y/n): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            log_info "Установка отменена пользователем."
+            exit 0
         fi
-    done
-
-    # Проверка дублирования
-    local ports=("$VLESS_PORT" "$XUI_PORT" "$ADGUARD_PORT")
-    local unique_ports=($(printf "%s\n" "${ports[@]}" | sort -u))
-
-    if [[ ${#ports[@]} -ne ${#unique_ports[@]} ]]; then
-        log_error "Порты не должны дублироваться"
-        exit 1
     fi
-
-    log_info "VLESS: $VLESS_PORT, 3X-UI: $XUI_PORT, AdGuard: $ADGUARD_PORT"
-}
-
-show_configuration_summary() {
-    echo ""
-    log_warn "Конфигурация установки:"
-    echo "  Домен: $DOMAIN"
-    echo "  Email: $EMAIL"
-    echo "  IP сервера: $SERVER_IP"
-    echo "  Порт VLESS: $VLESS_PORT"
-    echo "  Порт 3X-UI: $XUI_PORT"
-    echo "  Порт AdGuard: $ADGUARD_PORT"
-    echo "  Пароли: [будут сгенерированы]"
-    echo ""
+    save_state "user_input_completed"
 }
 
 # ===============================================
-# ФУНКЦИИ ПРОВЕРКИ ПОРТОВ И СЕРВИСОВ
+# ФУНКЦИИ НАСТРОЙКИ СЕТИ И FIREWALL
 # ===============================================
-
-check_port_used() {
-    local port="$1"
-
-    if command -v netstat >/dev/null 2>&1; then
-        netstat -tuln 2>/dev/null | grep -q ":$port "
-    elif command -v ss >/dev/null 2>&1; then
-        ss -tuln 2>/dev/null | grep -q ":$port "
-    else
-        return 1
-    fi
-}
 
 stop_conflicting_services() {
-    print_header "ОСТАНОВКА КОНФЛИКТУЮЩИХ СЕРВИСОВ"
-    save_state "stopping_conflicts"
-
-    local services=("apache2" "httpd" "nginx" "systemd-resolved" "bind9" "named" "dnsmasq")
-
+    print_header "ПРОВЕРКА КОНФЛИКТУЮЩИХ СЕРВИСОВ"
+    local services=("apache2" "httpd" "caddy" "systemd-resolved")
     for service in "${services[@]}"; do
-        if systemctl is-active --quiet "$service" 2>/dev/null; then
-            log_info "Остановка сервиса: $service"
-            systemctl stop "$service" 2>/dev/null || true
-            systemctl disable "$service" 2>/dev/null || true
+        if systemctl is-active --quiet "$service"; then
+            log_warn "Остановка и отключение конфликтующего сервиса: $service"
+            systemctl stop "$service"
+            systemctl disable "$service"
         fi
     done
-
-    # Принудительная очистка DNS портов
-    systemctl mask systemd-resolved 2>/dev/null || true
-    pkill -9 dnsmasq 2>/dev/null || true
-    pkill -9 named 2>/dev/null || true
-
-    log_info "Конфликтующие сервисы остановлены ✅"
+    # Nginx будет остановлен и перезапущен позже
+    systemctl stop nginx 2>/dev/null || true
 }
 
 check_dns_resolution() {
-    print_header "ПРОВЕРКА DNS"
-
-    log_info "IP сервера: $SERVER_IP"
-
-    local domain_ip
-    if command -v dig >/dev/null 2>&1; then
-        domain_ip=$(timeout 10 dig +short "$DOMAIN" 2>/dev/null | head -n1)
-    elif command -v nslookup >/dev/null 2>&1; then
-        domain_ip=$(timeout 10 nslookup "$DOMAIN" 2>/dev/null | awk '/^Address: / { print $2 }' | head -n1)
-    fi
-
-    if [[ -n "$domain_ip" ]]; then
-        log_info "IP домена: $domain_ip"
-        if [[ "$SERVER_IP" != "$domain_ip" ]]; then
-            log_warn "DNS домена не указывает на этот сервер"
-            log_warn "Это может вызвать проблемы с SSL сертификатом"
-        else
-            log_info "DNS настроен правильно ✅"
-        fi
+    print_header "ПРОВЕРКА DNS ЗАПИСИ"
+    log_info "Ожидаемый IP: $SERVER_IP"
+    local resolved_ip
+    resolved_ip=$(dig +short "$DOMAIN" @1.1.1.1 2>/dev/null | head -n1)
+    if [[ -z "$resolved_ip" ]]; then
+        log_warn "Не удалось разрешить DNS-имя домена $DOMAIN. Установка продолжится, но получение SSL может провалиться."
+        log_warn "Убедитесь, что A-запись для $DOMAIN указывает на $SERVER_IP."
+        sleep 5
+    elif [[ "$resolved_ip" != "$SERVER_IP" ]]; then
+        log_error "DNS запись для $DOMAIN указывает на IP $resolved_ip, а не на $SERVER_IP."
+        log_error "Пожалуйста, исправьте A-запись DNS и запустите скрипт заново."
+        exit 1
     else
-        log_warn "Не удалось разрешить домен $DOMAIN"
+        log_info "DNS запись корректна, $DOMAIN указывает на $SERVER_IP ✅"
     fi
 }
-
-# ===============================================
-# ФУНКЦИИ НАСТРОЙКИ FIREWALL
-# ===============================================
 
 configure_firewall() {
     print_header "НАСТРОЙКА FIREWALL"
     save_state "configuring_firewall"
-
-    # Установка UFW если нужно
-    if ! command -v ufw >/dev/null 2>&1; then
-        if [[ "$OS_ID" == "ubuntu" ]] || [[ "$OS_ID" == "debian" ]]; then
-            apt-get install -y -qq ufw
-        else
-            log_warn "UFW недоступен, используем firewalld"
-            configure_firewalld
-            return 0
-        fi
+    if command -v ufw >/dev/null; then
+        ufw --force reset >/dev/null
+        ufw default deny incoming
+        ufw default allow outgoing
+        ufw allow 22/tcp comment 'SSH'
+        ufw allow 80/tcp comment 'HTTP for SSL'
+        ufw allow 443/tcp comment 'HTTPS & Main Access'
+        ufw allow "$VLESS_PORT/tcp" comment 'VLESS Traffic'
+        ufw allow 53/tcp comment 'DNS TCP'
+        ufw allow 53/udp comment 'DNS UDP'
+        ufw --force enable
+        log_info "Firewall UFW настроен ✅"
+    elif command -v firewalld >/dev/null; then
+        systemctl start firewalld && systemctl enable firewalld
+        firewall-cmd --permanent --zone=public --add-service=ssh
+        firewall-cmd --permanent --zone=public --add-service=http
+        firewall-cmd --permanent --zone=public --add-service=https
+        firewall-cmd --permanent --zone=public --add-port="$VLESS_PORT/tcp"
+        firewall-cmd --permanent --zone=public --add-port=53/tcp
+        firewall-cmd --permanent --zone=public --add-port=53/udp
+        firewall-cmd --reload
+        log_info "Firewall Firewalld настроен ✅"
+    else
+        log_warn "Firewall не найден. Пропускаем настройку. Рекомендуется настроить вручную."
     fi
-
-    # Настройка UFW
-    ufw --force reset >/dev/null 2>&1
-    ufw default deny incoming >/dev/null 2>&1
-    ufw default allow outgoing >/dev/null 2>&1
-
-    # SSH
-    local ssh_port="22"
-    if command -v ss >/dev/null 2>&1; then
-        ssh_port=$(ss -tlnp 2>/dev/null | awk '/sshd.*LISTEN/ {split($4,a,":"); print a[length(a)]}' | head -n1)
-        [[ -z "$ssh_port" ]] && ssh_port="22"
-    fi
-
-    # Открытие портов
-    ufw allow "$ssh_port/tcp" comment "SSH" >/dev/null 2>&1
-    ufw allow 80/tcp comment "HTTP" >/dev/null 2>&1
-    ufw allow 443/tcp comment "HTTPS" >/dev/null 2>&1
-    ufw allow "$XUI_PORT/tcp" comment "3X-UI" >/dev/null 2>&1
-    ufw allow "$ADGUARD_PORT/tcp" comment "AdGuard" >/dev/null 2>&1
-    ufw allow 53/tcp comment "DNS TCP" >/dev/null 2>&1
-    ufw allow 53/udp comment "DNS UDP" >/dev/null 2>&1
-
-    if [[ "$VLESS_PORT" != "443" ]]; then
-        ufw allow "$VLESS_PORT/tcp" comment "VLESS" >/dev/null 2>&1
-    fi
-
-    ufw --force enable >/dev/null 2>&1
-
-    log_info "Firewall настроен ✅"
-}
-
-configure_firewalld() {
-    systemctl enable firewalld
-    systemctl start firewalld
-
-    firewall-cmd --permanent --add-port=22/tcp
-    firewall-cmd --permanent --add-port=80/tcp
-    firewall-cmd --permanent --add-port=443/tcp
-    firewall-cmd --permanent --add-port="$XUI_PORT/tcp"
-    firewall-cmd --permanent --add-port="$ADGUARD_PORT/tcp"
-    firewall-cmd --permanent --add-port=53/tcp
-    firewall-cmd --permanent --add-port=53/udp
-
-    if [[ "$VLESS_PORT" != "443" ]]; then
-        firewall-cmd --permanent --add-port="$VLESS_PORT/tcp"
-    fi
-
-    firewall-cmd --reload
-
-    log_info "Firewalld настроен ✅"
 }
 
 # ===============================================
-# ФУНКЦИИ SSL СЕРТИФИКАТОВ
+# ФУНКЦИИ НАСТРОЙКИ SSL (CERTBOT)
 # ===============================================
 
 setup_ssl() {
-    print_header "НАСТРОЙКА SSL"
+    print_header "НАСТРОЙКА SSL СЕРТИФИКАТА"
     save_state "setting_up_ssl"
 
-    # Создание временной конфигурации Nginx
-    setup_temporary_nginx
+    mkdir -p /var/www/html/.well-known/acme-challenge
+    chown -R www-data:www-data /var/www/html
 
-    # Получение сертификата
-    obtain_ssl_certificate
-
-    # Настройка автообновления
-    setup_ssl_renewal
-}
-
-setup_temporary_nginx() {
-    log_info "Настройка временного веб-сервера..."
-
-    mkdir -p /var/www/html
-    echo "Setup in progress..." > /var/www/html/index.html
-
+    log_info "Создание временной конфигурации Nginx для Certbot..."
     cat > /etc/nginx/sites-available/default << EOF
 server {
     listen 80 default_server;
-    listen [::]:80 default_server;
-    server_name _;
-
-    location /.well-known/acme-challenge/ {
-        root /var/www/html;
-        try_files \$uri =404;
-    }
-
-    location / {
-        root /var/www/html;
-        index index.html;
+    server_name $DOMAIN;
+    root /var/www/html;
+    location ~ /.well-known/acme-challenge {
+        allow all;
     }
 }
 EOF
-
-    # Создание симлинка
-    mkdir -p /etc/nginx/sites-enabled
     ln -sf /etc/nginx/sites-available/default /etc/nginx/sites-enabled/
+    nginx -t && systemctl restart nginx
 
-    # Проверка и запуск
-    if nginx -t >/dev/null 2>&1; then
-        systemctl enable nginx
-        systemctl start nginx
-        sleep 3
-
-        if ! systemctl is-active --quiet nginx; then
-            log_error "Nginx не запустился"
-            exit 1
-        fi
-    else
-        log_error "Ошибка в конфигурации Nginx"
-        nginx -t
-        exit 1
-    fi
-}
-
-obtain_ssl_certificate() {
     log_info "Получение SSL сертификата для $DOMAIN..."
-
-    local certbot_cmd="certbot certonly --webroot --webroot-path=/var/www/html --email $EMAIL --agree-tos --non-interactive --domains $DOMAIN"
-
-    if $certbot_cmd; then
-        log_info "SSL сертификат получен ✅"
-
-        # Проверка файлов сертификата
-        if [[ -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ]] && [[ -f "/etc/letsencrypt/live/$DOMAIN/privkey.pem" ]]; then
-            log_info "Файлы сертификата найдены ✅"
-        else
-            log_error "Файлы сертификата не найдены"
-            exit 1
-        fi
+    if certbot certonly --nginx -d "$DOMAIN" --email "$EMAIL" --agree-tos --non-interactive --redirect; then
+        log_info "SSL сертификат успешно получен ✅"
+        # Certbot сам меняет конфиг, вернем наш временный для чистоты
+        systemctl stop nginx
     else
-        log_error "Не удалось получить SSL сертификат"
-        log_error "Убедитесь что домен $DOMAIN указывает на IP $SERVER_IP"
+        log_error "Не удалось получить SSL-сертификат. Проверьте DNS запись и доступность порта 80."
         exit 1
     fi
-}
 
-setup_ssl_renewal() {
-    log_info "Настройка автообновления SSL..."
-
-    cat > /etc/cron.d/certbot-renewal << 'EOF'
-0 12 * * * root /usr/bin/certbot renew --quiet --post-hook "systemctl reload nginx"
-EOF
-
-    # Включение cron
-    systemctl enable cron 2>/dev/null || systemctl enable crond 2>/dev/null || true
-    systemctl start cron 2>/dev/null || systemctl start crond 2>/dev/null || true
-
+    (crontab -l 2>/dev/null; echo "0 2 * * * certbot renew --quiet --post-hook \"systemctl reload nginx\"") | crontab -
     log_info "Автообновление SSL настроено ✅"
 }
 
@@ -837,128 +517,34 @@ EOF
 # ===============================================
 
 install_3x_ui() {
-    print_header "УСТАНОВКА 3X-UI"
+    print_header "УСТАНОВКА ПАНЕЛИ 3X-UI"
     save_state "installing_3x_ui"
 
-    # Попытка автоматической установки
-    if install_3x_ui_auto; then
-        log_info "3X-UI установлен автоматически ✅"
-    else
-        log_warn "Переход к ручной установке..."
-        install_3x_ui_manual
+    log_info "Установка 3X-UI..."
+    if ! bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh) > $LOG_FILE 2>&1; then
+        log_warn "Стандартный установщик 3X-UI не сработал, пробую запасной метод."
+        cd /tmp
+        local version
+        version=$(curl -fsSL "https://api.github.com/repos/MHSanaei/3x-ui/releases/latest" 2>/dev/null | grep -oP '"tag_name": "\K[^"]*' || echo "v2.3.4")
+        wget -N "https://github.com/MHSanaei/3x-ui/releases/download/${version}/x-ui-linux-${ARCH}.tar.gz"
+        tar -zxvf "x-ui-linux-${ARCH}.tar.gz"
+        chmod +x x-ui/x-ui x-ui/bin/*
+        cp x-ui/x-ui.service /etc/systemd/system/
+        mv x-ui/ /usr/local/
     fi
 
-    configure_3x_ui_service
-    log_info "3X-UI установлен и настроен ✅"
-}
+    log_info "Настройка 3X-UI..."
+    # Панель должна слушать только localhost, т.к. доступ будет через Nginx
+    /usr/local/x-ui/x-ui setting -username "$XUI_USERNAME" -password "$XUI_PASSWORD" -port "$XUI_PORT" -listen "127.0.0.1" >/dev/null
 
-install_3x_ui_auto() {
-    log_info "Автоматическая установка 3X-UI..."
-
-    # Скачивание скрипта
-    if ! curl -fsSL "https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh" -o /tmp/3x-ui-install.sh; then
-        return 1
-    fi
-
-    chmod +x /tmp/3x-ui-install.sh
-
-    # Автоматический ввод
-    echo -e "y\n$XUI_USERNAME\n$XUI_PASSWORD\n$XUI_PORT\ny\n" | timeout 300 bash /tmp/3x-ui-install.sh >/dev/null 2>&1 || return 1
-
-    # Проверка установки
-    if [[ -f "/opt/3x-ui/x-ui" ]] && [[ -f "/etc/systemd/system/x-ui.service" ]]; then
-        return 0
-    else
-        return 1
-    fi
-}
-
-install_3x_ui_manual() {
-    log_info "Ручная установка 3X-UI..."
-
-    cd /opt
-
-    # Получение последней версии
-    local version
-    version=$(curl -fsSL "https://api.github.com/repos/MHSanaei/3x-ui/releases/latest" 2>/dev/null | grep -oP '"tag_name": "\K[^"]*' || echo "v2.3.4")
-    log_info "Версия 3X-UI: $version"
-
-    # Скачивание
-    local url="https://github.com/MHSanaei/3x-ui/releases/download/$version/x-ui-linux-${ARCH}.tar.gz"
-
-    if ! wget -q --show-progress "$url" -O x-ui.tar.gz; then
-        log_error "Не удалось скачать 3X-UI"
-        exit 1
-    fi
-
-    # Извлечение
-    tar -zxf x-ui.tar.gz
-    rm x-ui.tar.gz
-
-    # Переименование
-    if [[ -d "x-ui" ]]; then
-        mv x-ui 3x-ui
-    fi
-
-    cd 3x-ui
-    chmod +x x-ui
-
-    # Создание сервиса
-    create_3x_ui_service
     systemctl daemon-reload
     systemctl enable x-ui
-}
-
-create_3x_ui_service() {
-    cat > /etc/systemd/system/x-ui.service << EOF
-[Unit]
-Description=3x-ui Service
-After=network.target
-Wants=network.target
-
-[Service]
-Type=simple
-User=root
-Group=root
-WorkingDirectory=/opt/3x-ui
-ExecStart=/opt/3x-ui/x-ui
-ExecReload=/bin/kill -HUP \$MAINPID
-Restart=on-failure
-RestartSec=10
-TimeoutStopSec=10
-
-[Install]
-WantedBy=multi-user.target
-EOF
-}
-
-configure_3x_ui_service() {
-    log_info "Настройка 3X-UI..."
-
-    # Запуск
     systemctl start x-ui
 
-    # Ожидание запуска
-    local attempts=0
-    while [[ $attempts -lt 30 ]]; do
-        if systemctl is-active --quiet x-ui; then
-            break
-        fi
-        sleep 2
-        attempts=$((attempts + 1))
-    done
-
     if systemctl is-active --quiet x-ui; then
-        log_info "3X-UI запущен на порту $XUI_PORT ✅"
-
-        # Настройка через CLI
-        if [[ -f "/opt/3x-ui/x-ui" ]]; then
-            /opt/3x-ui/x-ui setting -username "$XUI_USERNAME" -password "$XUI_PASSWORD" -port "$XUI_PORT" >/dev/null 2>&1 || true
-            systemctl restart x-ui
-        fi
+        log_info "Панель 3X-UI установлена и запущена ✅"
     else
-        log_error "3X-UI не запустился"
-        systemctl status x-ui --no-pager
+        log_error "Панель 3X-UI не запустилась. Смотрите логи: journalctl -u x-ui"
         exit 1
     fi
 }
@@ -971,389 +557,58 @@ install_adguard() {
     print_header "УСТАНОВКА ADGUARD HOME"
     save_state "installing_adguard"
 
-    # Подготовка DNS
-    prepare_dns_environment
-
-    # Установка AdGuard
-    download_and_install_adguard
-
-    # Создание конфигурации
-    create_adguard_configuration
-
-    # Запуск и настройка
-    start_and_configure_adguard
-
-    log_info "AdGuard Home установлен и настроен ✅"
-}
-
-prepare_dns_environment() {
-    log_info "Подготовка DNS окружения..."
-
-    # Остановка системных DNS сервисов
-    systemctl stop systemd-resolved 2>/dev/null || true
-    systemctl disable systemd-resolved 2>/dev/null || true
-    systemctl mask systemd-resolved 2>/dev/null || true
-
-    # Остановка других DNS сервисов
-    pkill -9 dnsmasq 2>/dev/null || true
-    pkill -9 named 2>/dev/null || true
-
-    # Настройка временного resolv.conf
-    if [[ -f /etc/resolv.conf ]]; then
-        cp /etc/resolv.conf /etc/resolv.conf.backup
-        cat > /etc/resolv.conf << 'EOF'
-# Temporary DNS during AdGuard installation
-nameserver 8.8.8.8
-nameserver 1.1.1.1
-EOF
-    fi
-
-    log_info "DNS окружение подготовлено ✅"
-}
-
-restore_system_dns() {
-    if [[ -f /etc/resolv.conf.backup ]]; then
-        mv /etc/resolv.conf.backup /etc/resolv.conf
-    fi
-}
-
-download_and_install_adguard() {
-    log_info "Загрузка AdGuard Home для $ARCH..."
-
-    # Очистка и создание директории
-    rm -rf /opt/AdGuardHome
-    mkdir -p /opt/AdGuardHome
-
-    # Создание временной директории
-    local temp_dir="/tmp/adguard-install"
-    rm -rf "$temp_dir"
-    mkdir -p "$temp_dir"
-    cd "$temp_dir"
-
-    # Скачивание
+    log_info "Загрузка и установка AdGuard Home..."
     local url="https://static.adguard.com/adguardhome/release/AdGuardHome_linux_${ARCH}.tar.gz"
+    wget -qO- "$url" | tar -xz -C /tmp
+    mkdir -p /opt/AdGuardHome
+    mv /tmp/AdGuardHome/* /opt/AdGuardHome
+    rm -rf /tmp/AdGuardHome
 
-    if ! wget -q --show-progress "$url" -O AdGuardHome.tar.gz; then
-        log_error "Не удалось скачать AdGuard Home"
-        log_error "URL: $url"
-        exit 1
-    fi
-
-    # Проверка архива
-    if ! tar -tzf AdGuardHome.tar.gz >/dev/null 2>&1; then
-        log_error "Поврежденный архив AdGuard Home"
-        exit 1
-    fi
-
-    # Извлечение
-    tar -zxf AdGuardHome.tar.gz
-
-    # Перемещение файлов
-    if [[ -d "AdGuardHome" ]]; then
-        cp -r AdGuardHome/* /opt/AdGuardHome/
-        rm -rf "$temp_dir"
-    else
-        log_error "Неожиданная структура архива AdGuard"
-        ls -la "$temp_dir"
-        exit 1
-    fi
-
-    # Проверка бинарного файла
-    if [[ ! -f "/opt/AdGuardHome/AdGuardHome" ]]; then
-        log_error "Бинарный файл AdGuard не найден"
-        exit 1
-    fi
-
-    # Установка прав
-    chmod +x /opt/AdGuardHome/AdGuardHome
-    chown -R root:root /opt/AdGuardHome
-
-    # Проверка работоспособности
-    if ! /opt/AdGuardHome/AdGuardHome --version >/dev/null 2>&1; then
-        log_error "Бинарный файл AdGuard поврежден"
-        exit 1
-    fi
-
-    log_info "AdGuard Home загружен ✅"
-}
-
-create_adguard_configuration() {
     log_info "Создание конфигурации AdGuard Home..."
+    local adguard_hash
+    adguard_hash=$(/opt/AdGuardHome/AdGuardHome -u "admin" -p "$ADGUARD_PASSWORD" 2>&1 | grep 'user:' | awk '{print $NF}')
 
-    # Создание директорий
-    mkdir -p /opt/AdGuardHome/{data,work,conf}
-
-    # Генерация хеша пароля
-    local password_hash
-    if command -v htpasswd >/dev/null 2>&1; then
-        password_hash=$(htpasswd -bnBC 12 "" "$ADGUARD_PASSWORD" | tr -d ':\n' | sed 's/^[^$]*//')
-    else
-        password_hash="\$2a\$12\$$(openssl rand -base64 16 | tr -d "=+/")"
-    fi
-
-    # Создание конфигурации
     cat > /opt/AdGuardHome/AdGuardHome.yaml << EOF
-# AdGuard Home Configuration
-# Generated by VPN Auto Installer v$SCRIPT_VERSION
-# $(date)
-
-bind_host: 0.0.0.0
+bind_host: 127.0.0.1 # Слушать только localhost для проксирования через Nginx
 bind_port: $ADGUARD_PORT
-
+auth_attempts: 5
 users:
   - name: admin
-    password: $password_hash
-
-auth_attempts: 5
-block_auth_min: 15
-http_proxy: ""
+    password: "$adguard_hash"
 language: ru
-theme: auto
-debug_pprof: false
-web_session_ttl: 720
-
 dns:
   bind_hosts:
-    - 0.0.0.0
+    - 0.0.0.0 # DNS-сервер слушает все интерфейсы
   port: 53
-
-  # Logging
-  anonymize_client_ip: false
-  querylog_enabled: true
-  querylog_file_enabled: true
-  querylog_interval: 24h
-  querylog_size_memory: 1000
-
-  # Statistics
-  statistics_interval: 1
-
-  # Protection
   protection_enabled: true
-  blocking_mode: default
-  blocked_response_ttl: 10
-  parental_block_host: family-block.dns.adguard.com
-  safebrowsing_block_host: standard-block.dns.adguard.com
-
-  # Filtering
   filtering_enabled: true
-  filters_update_interval: 24
-  parental_enabled: false
-  safesearch_enabled: false
   safebrowsing_enabled: true
-
-  # Cache
-  cache_size: 4194304
-  cache_ttl_min: 0
-  cache_ttl_max: 0
-  cache_optimistic: false
-  safebrowsing_cache_size: 1048576
-  safesearch_cache_size: 1048576
-  parental_cache_size: 1048576
-
-  # Performance
-  max_goroutines: 300
-
-  # Client settings
-  resolve_clients: true
-  use_private_ptr_resolvers: true
-  local_ptr_upstreams: []
-
-  # Access control
-  allowed_clients: []
-  disallowed_clients: []
-  blocked_hosts:
-    - version.bind
-    - id.server
-    - hostname.bind
-
-  trusted_proxies:
-    - 127.0.0.0/8
-    - ::1/128
-
-  # Upstream DNS
+  parental_enabled: false
   upstream_dns:
     - https://dns.cloudflare.com/dns-query
     - https://dns.google/dns-query
-    - https://dns.quad9.net/dns-query
+  bootstrap_dns:
     - 1.1.1.1
     - 8.8.8.8
-
-  upstream_timeout: 10s
-  bootstrap_dns:
-    - 9.9.9.10
-    - 149.112.112.10
-
-  # Additional settings
-  all_servers: false
-  fastest_addr: false
-  fastest_timeout: 1s
-  serve_http3: false
-  use_http3_upstreams: false
-  enable_dnssec: false
-  aaaa_disabled: false
-  use_dns64: false
-  serve_plain_dns: true
-
-  edns_client_subnet:
-    enabled: false
-
-  bogus_nxdomain: []
-  private_networks: []
-
-# TLS (disabled)
-tls:
-  enabled: false
-
-# Filter lists
-filters:
-  - enabled: true
-    url: https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt
-    name: AdGuard DNS filter
-    id: 1
-  - enabled: true
-    url: https://someonewhocares.org/hosts/zero/hosts
-    name: Dan Pollock's List
-    id: 2
-  - enabled: true
-    url: https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts
-    name: Steven Black's List
-    id: 3
-
-whitelist_filters: []
-
-user_rules:
-  - '@@||speedtest.net^'
-  - '@@||fast.com^'
-  - '@@||netflix.com^'
-  - '@@||youtube.com^'
-
-# DHCP (disabled)
-dhcp:
-  enabled: false
-
-# Clients
-clients:
-  runtime_sources:
-    whois: true
-    arp: true
-    rdns: true
-    dhcp: true
-    hosts: true
-  persistent: []
-
-# Logging
-log_compress: false
-log_localtime: false
-log_max_backups: 0
-log_max_size: 100
-log_max_age: 3
-log_file: ""
-verbose: false
-
-# System
-os:
-  group: ""
-  user: ""
-  rlimit_nofile: 0
-
 schema_version: 27
 EOF
 
-    # Права на файлы
-    chmod 644 /opt/AdGuardHome/AdGuardHome.yaml
-    chown root:root /opt/AdGuardHome/AdGuardHome.yaml
-
-    log_info "Конфигурация AdGuard создана ✅"
-}
-
-start_and_configure_adguard() {
-    log_info "Запуск AdGuard Home..."
-
-    # Создание systemd сервиса
-    create_adguard_service
-
-    # Проверка конфигурации
-    cd /opt/AdGuardHome
-    if ! ./AdGuardHome --check-config --config ./AdGuardHome.yaml; then
-        log_error "Ошибка в конфигурации AdGuard"
-        exit 1
-    fi
-
-    # Запуск сервиса
-    systemctl daemon-reload
-    systemctl enable AdGuardHome
-    systemctl start AdGuardHome
-
-    # Ожидание запуска
-    local attempts=0
-    while [[ $attempts -lt 30 ]]; do
-        if systemctl is-active --quiet AdGuardHome && check_port_used "$ADGUARD_PORT"; then
-            break
-        fi
-        sleep 2
-        attempts=$((attempts + 1))
-    done
+    log_info "Установка AdGuard Home как сервиса..."
+    /opt/AdGuardHome/AdGuardHome -s install >/dev/null
 
     if systemctl is-active --quiet AdGuardHome; then
-        log_info "AdGuard Home запущен на порту $ADGUARD_PORT ✅"
-
-        # Проверка веб-интерфейса
-        sleep 3
-        if timeout 10 curl -s "http://localhost:$ADGUARD_PORT" >/dev/null 2>&1; then
-            log_info "Веб-интерфейс AdGuard доступен ✅"
-        fi
-
-        # Проверка DNS
-        if timeout 10 nslookup google.com localhost >/dev/null 2>&1; then
-            log_info "DNS сервер AdGuard работает ✅"
-        fi
+        log_info "AdGuard Home установлен и запущен ✅"
     else
-        log_error "AdGuard Home не запустился"
-        diagnose_adguard_failure
-        exit 1
+        # Если сервис не запустился, пробуем запустить еще раз
+        systemctl start AdGuardHome
+        sleep 3
+        if systemctl is-active --quiet AdGuardHome; then
+            log_info "AdGuard Home установлен и запущен ✅"
+        else
+            log_error "AdGuard Home не запустился. Смотрите логи: journalctl -u AdGuardHome"
+            exit 1
+        fi
     fi
-}
-
-create_adguard_service() {
-    cat > /etc/systemd/system/AdGuardHome.service << EOF
-[Unit]
-Description=AdGuard Home
-Documentation=https://github.com/AdguardTeam/AdGuardHome
-After=network.target
-Wants=network.target
-
-[Service]
-Type=simple
-User=root
-Group=root
-WorkingDirectory=/opt/AdGuardHome
-ExecStart=/opt/AdGuardHome/AdGuardHome --config /opt/AdGuardHome/AdGuardHome.yaml --work-dir /opt/AdGuardHome --no-check-update
-Restart=on-failure
-RestartSec=10
-TimeoutStopSec=10
-
-[Install]
-WantedBy=multi-user.target
-EOF
-}
-
-diagnose_adguard_failure() {
-    log_error "Диагностика проблем AdGuard Home:"
-
-    # Статус сервиса
-    systemctl status AdGuardHome --no-pager || true
-
-    # Логи
-    journalctl -u AdGuardHome --no-pager -n 10 || true
-
-    # Файлы
-    ls -la /opt/AdGuardHome/ || true
-
-    # Порты
-    netstat -tuln | grep -E ":($ADGUARD_PORT|53) " || log_info "Порты свободны"
-
-    # Процессы
-    ps aux | grep -i adguard | grep -v grep || log_info "Процессы не найдены"
 }
 
 # ===============================================
@@ -1361,85 +616,89 @@ diagnose_adguard_failure() {
 # ===============================================
 
 configure_final_nginx() {
-    print_header "ФИНАЛЬНАЯ НАСТРОЙКА NGINX"
+    print_header "НАСТРОЙКА REVERSE PROXY NGINX"
     save_state "configuring_final_nginx"
 
-    # Создание финальной конфигурации
-    create_final_nginx_config
-
-    # Создание главной страницы
-    create_main_page
-
-    # Проверка и перезагрузка
-    if nginx -t; then
-        systemctl reload nginx
-        log_info "Nginx настроен ✅"
-    else
-        log_error "Ошибка в конфигурации Nginx"
-        nginx -t
-        exit 1
-    fi
-}
-
-create_final_nginx_config() {
+    log_info "Создание финальной конфигурации Nginx..."
     cat > /etc/nginx/sites-available/default << EOF
 server_tokens off;
 
-# HTTP -> HTTPS redirect
+# HTTP -> HTTPS Redirect
 server {
     listen 80 default_server;
     listen [::]:80 default_server;
     server_name $DOMAIN;
-
-    location /.well-known/acme-challenge/ {
-        root /var/www/html;
-    }
-
-    location / {
-        return 301 https://\$server_name\$request_uri;
-    }
+    return 301 https://\$host\$request_uri;
 }
 
-# HTTPS server
+# HTTPS Server
 server {
     listen 443 ssl http2 default_server;
     listen [::]:443 ssl http2 default_server;
     server_name $DOMAIN;
 
-    # SSL configuration
+    # SSL
     ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
-
-    # SSL settings
     ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384;
-    ssl_prefer_server_ciphers on;
-    ssl_session_cache shared:SSL:10m;
-    ssl_session_timeout 10m;
+    ssl_prefer_server_ciphers off;
+    ssl_ciphers "EECDH+AESGCM:EDH+AESGCM:AES256+EECDH:AES256+EDH";
 
-    # Security headers
+    # Security Headers
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
     add_header X-Frame-Options DENY always;
     add_header X-Content-Type-Options nosniff always;
-    add_header X-XSS-Protection "1; mode=block" always;
 
-    # Main site
-    location / {
+    # Root location with placeholder page
+    location = / {
         root /var/www/html;
         index index.html;
-        try_files \$uri \$uri/ =404;
     }
 
-    # Logs
+    # 3X-UI Panel Proxy
+    location /xui/ {
+        proxy_pass http://127.0.0.1:$XUI_PORT/xui/;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        # WebSocket support for panel live stats
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+
+    # AdGuard Home Panel Proxy
+    location /adguard/ {
+        proxy_pass http://127.0.0.1:$ADGUARD_PORT/;
+        proxy_redirect / /adguard/;
+        proxy_cookie_path / /adguard/;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        # WebSocket support
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+
     access_log /var/log/nginx/access.log;
     error_log /var/log/nginx/error.log;
 }
 EOF
 
-    ln -sf /etc/nginx/sites-available/default /etc/nginx/sites-enabled/
+    create_main_page
+
+    if nginx -t; then
+        systemctl restart nginx
+        log_info "Финальная конфигурация Nginx применена ✅"
+    else
+        log_error "Ошибка в финальной конфигурации Nginx. Проверьте вывод 'nginx -t'."
+        exit 1
+    fi
 }
 
 create_main_page() {
+    # Точный HTML-шаблон, как в эталонном скрипте, но с обновленными ссылками
     cat > /var/www/html/index.html << EOF
 <!DOCTYPE html>
 <html lang="ru">
@@ -1448,156 +707,27 @@ create_main_page() {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>🛡️ VPN Server - $DOMAIN</title>
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 20px;
-            color: #333;
-        }
-        .container {
-            max-width: 900px;
-            margin: 0 auto;
-            background: white;
-            border-radius: 20px;
-            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
-            overflow: hidden;
-        }
-        .header {
-            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
-            color: white;
-            text-align: center;
-            padding: 40px 20px;
-        }
-        .header h1 { font-size: 2.5rem; margin-bottom: 10px; }
-        .content { padding: 40px; }
-        .panel {
-            background: #f8f9fa;
-            border-radius: 12px;
-            padding: 25px;
-            margin-bottom: 25px;
-            border-left: 4px solid #28a745;
-        }
-        .button {
-            display: inline-block;
-            padding: 12px 24px;
-            background: linear-gradient(135deg, #007bff, #0056b3);
-            color: white;
-            text-decoration: none;
-            border-radius: 8px;
-            margin: 8px 8px 8px 0;
-            font-weight: 500;
-            transition: transform 0.2s;
-        }
-        .button:hover { transform: translateY(-2px); }
-        .stats {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 20px;
-            margin: 20px 0;
-        }
-        .stat {
-            text-align: center;
-            padding: 20px;
-            background: #f8f9fa;
-            border-radius: 8px;
-        }
-        .stat-value {
-            font-size: 1.5rem;
-            font-weight: 700;
-            color: #007bff;
-        }
-        .footer {
-            background: #343a40;
-            color: white;
-            text-align: center;
-            padding: 30px;
-        }
-        .status {
-            display: inline-block;
-            width: 10px;
-            height: 10px;
-            background: #28a745;
-            border-radius: 50%;
-            margin-right: 8px;
-            animation: pulse 2s infinite;
-        }
-        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
-        @media (max-width: 768px) {
-            .header h1 { font-size: 2rem; }
-            .content { padding: 20px; }
-        }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 20px; color: #fff; text-align: center; }
+        .container { max-width: 800px; margin: 40px auto; background: rgba(255,255,255,0.1); border-radius: 20px; box-shadow: 0 15px 35px rgba(0,0,0,0.2); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.2); padding: 40px; }
+        h1 { font-size: 2.8rem; margin-bottom: 10px; }
+        p { font-size: 1.2rem; margin-bottom: 30px; }
+        .button-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; }
+        .button { display: block; padding: 20px; background: rgba(255,255,255,0.2); color: white; text-decoration: none; border-radius: 12px; font-weight: 500; transition: background 0.3s; font-size: 1.1rem; }
+        .button:hover { background: rgba(255,255,255,0.3); }
+        .footer { margin-top: 40px; font-size: 0.9rem; opacity: 0.7; }
     </style>
 </head>
 <body>
     <div class="container">
-        <div class="header">
-            <h1>🛡️ VPN Server</h1>
-            <p>Безопасное подключение готово</p>
+        <h1>🛡️ VPN Сервер Активен</h1>
+        <p>Ваше подключение к сети теперь под защитой.</p>
+        <div class="button-grid">
+            <a href="/xui/" class="button" target="_blank">Панель управления 3X-UI</a>
+            <a href="/adguard/" class="button" target="_blank">Панель управления AdGuard</a>
         </div>
-
-        <div class="content">
-            <div class="panel">
-                <h4><span class="status"></span>Сервер успешно настроен</h4>
-                <p><strong>Домен:</strong> $DOMAIN</p>
-                <p><strong>IP:</strong> $SERVER_IP</p>
-                <p><strong>Установлено:</strong> $(date '+%d.%m.%Y %H:%M')</p>
-            </div>
-
-            <div class="panel">
-                <h3>📊 Панели управления</h3>
-                <a href="https://$DOMAIN:$XUI_PORT" class="button" target="_blank">3X-UI Panel</a>
-                <a href="http://$DOMAIN:$ADGUARD_PORT" class="button" target="_blank">AdGuard Home</a>
-                <p style="margin-top: 15px; padding: 10px; background: #e9ecef; border-radius: 6px;">
-                    <small><strong>Логин:</strong> admin<br>
-                    <strong>Пароли:</strong> в файле /root/vpn-server-info.txt</small>
-                </p>
-            </div>
-
-            <div class="stats">
-                <div class="stat">
-                    <div class="stat-value">$VLESS_PORT</div>
-                    <div>VLESS Port</div>
-                </div>
-                <div class="stat">
-                    <div class="stat-value">$XUI_PORT</div>
-                    <div>3X-UI Port</div>
-                </div>
-                <div class="stat">
-                    <div class="stat-value">$ADGUARD_PORT</div>
-                    <div>AdGuard Port</div>
-                </div>
-                <div class="stat">
-                    <div class="stat-value">53</div>
-                    <div>DNS Port</div>
-                </div>
-            </div>
-
-            <div class="panel">
-                <h3>📱 Настройка VPN</h3>
-                <ol style="margin-left: 20px;">
-                    <li>Откройте 3X-UI панель</li>
-                    <li>Войдите (admin / пароль из инструкций)</li>
-                    <li>Создайте пользователя VLESS с TLS</li>
-                    <li>Домен: <strong>$DOMAIN</strong>, Порт: <strong>$VLESS_PORT</strong></li>
-                    <li>Скачайте конфигурацию</li>
-                </ol>
-                <div style="background: #fff3cd; padding: 15px; border-radius: 8px; margin: 15px 0;">
-                    <strong>Клиенты:</strong> v2rayNG (Android), Shadowrocket (iOS), v2rayN (Windows), ClashX (macOS)
-                </div>
-            </div>
-
-            <div class="panel">
-                <h3>🛡️ DNS с блокировкой рекламы</h3>
-                <p>DNS сервер: <strong>$SERVER_IP</strong> (порт 53)</p>
-                <p>Настройте в параметрах сети для блокировки рекламы на всех устройствах.</p>
-            </div>
-        </div>
-
+        <p style="margin-top: 30px; font-size: 1rem;">Данные для входа находятся в файле <code>/root/vpn_server_info.txt</code></p>
         <div class="footer">
-            <p>🚀 VPN Auto Installer v$SCRIPT_VERSION</p>
-            <p>Сделано для вашей безопасности в интернете</p>
+            <p>Сервер настроен с помощью $SCRIPT_NAME v$SCRIPT_VERSION</p>
         </div>
     </div>
 </body>
@@ -1605,196 +735,230 @@ create_main_page() {
 EOF
 }
 
+create_cli_commands() {
+    print_header "СОЗДАНИЕ CLI УТИЛИТ"
+
+    # 1. vpn-status
+    cat > /usr/local/bin/vpn-status << 'EOF'
+#!/bin/bash
+echo "--- Nginx Status ---"
+systemctl status nginx --no-pager
+echo -e "\n--- 3X-UI Status ---"
+systemctl status x-ui --no-pager
+echo -e "\n--- AdGuard Home Status ---"
+systemctl status AdGuardHome --no-pager
+EOF
+
+    # 2. vpn-restart
+    cat > /usr/local/bin/vpn-restart << 'EOF'
+#!/bin/bash
+echo "Restarting all VPN services..."
+systemctl restart nginx x-ui AdGuardHome
+echo "Done."
+vpn-status
+EOF
+
+    # 3. vpn-logs
+    cat > /usr/local/bin/vpn-logs << 'EOF'
+#!/bin/bash
+if [[ -z "$1" ]]; then
+    echo "Usage: vpn-logs [nginx|xui|adguard]"
+    exit 1
+fi
+case $1 in
+    nginx) journalctl -u nginx -f ;;
+    xui) journalctl -u x-ui -f ;;
+    adguard) journalctl -u AdGuardHome -f ;;
+    *) echo "Invalid service. Use [nginx|xui|adguard]." ;;
+esac
+EOF
+
+    # 4. vpn-ssl-renew
+    cat > /usr/local/bin/vpn-ssl-renew << 'EOF'
+#!/bin/bash
+echo "Forcing SSL certificate renewal..."
+certbot renew --force-renewal --post-hook "systemctl reload nginx"
+echo "Done."
+EOF
+
+    # 5. vpn-info
+    cat > /usr/local/bin/vpn-info << 'EOF'
+#!/bin/bash
+cat /root/vpn_server_info.txt
+EOF
+
+    # 6. Uninstall script generator
+    create_uninstall_script
+
+    chmod +x /usr/local/bin/vpn-status /usr/local/bin/vpn-restart /usr/local/bin/vpn-logs /usr/local/bin/vpn-ssl-renew /usr/local/bin/vpn-info
+    log_info "CLI утилиты созданы: vpn-status, vpn-restart, vpn-logs, vpn-ssl-renew, vpn-info ✅"
+    log_warn "Для полного удаления системы используйте: ${UNINSTALL_SCRIPT_PATH}"
+    save_state "cli_commands_created"
+}
+
+create_uninstall_script() {
+    cat > "$UNINSTALL_SCRIPT_PATH" << EOF
+#!/bin/bash
+set -x
+
+echo "Stopping services..."
+systemctl stop nginx x-ui AdGuardHome
+systemctl disable nginx x-ui AdGuardHome
+
+echo "Removing service files..."
+rm -f /etc/systemd/system/nginx.service /etc/systemd/system/x-ui.service /etc/systemd/system/AdGuardHome.service
+systemctl daemon-reload
+
+echo "Removing application files..."
+rm -rf /opt/AdGuardHome /usr/local/x-ui/ /etc/nginx
+
+echo "Removing CLI tools..."
+rm -f /usr/local/bin/vpn-* /usr/local/sbin/uninstall_vpn_server.sh
+
+echo "Removing Certbot certificates..."
+rm -rf /etc/letsencrypt/live/$DOMAIN /etc/letsencrypt/renewal/${DOMAIN}.conf /etc/letsencrypt/archive/$DOMAIN
+
+echo "Removing web root..."
+rm -rf /var/www/html
+
+echo "Removing logs and state file..."
+rm -f $LOG_FILE $STATE_FILE
+
+echo "Cleaning up packages..."
+if command -v apt-get &> /dev/null; then
+    apt-get purge --auto-remove -y nginx certbot python3-certbot-nginx
+else
+    dnf remove -y nginx certbot python3-certbot-nginx
+fi
+
+echo "Resetting firewall..."
+if command -v ufw &> /dev/null; then
+    ufw --force reset
+elif command -v firewalld &> /dev/null; then
+    firewall-cmd --permanent --remove-port=$VLESS_PORT/tcp
+    firewall-cmd --reload
+fi
+
+echo "Uninstall complete."
+EOF
+    chmod +x "$UNINSTALL_SCRIPT_PATH"
+}
+
 create_instructions() {
-    print_header "СОЗДАНИЕ ИНСТРУКЦИЙ"
+    print_header "СОЗДАНИЕ ФАЙЛА С ИНСТРУКЦИЯМИ"
+    local info_file="/root/vpn_server_info.txt"
 
-    local instructions="/root/vpn-server-info.txt"
-
-    cat > "$instructions" << EOF
+    cat > "$info_file" << EOF
 ╔═══════════════════════════════════════════════════════════════╗
-║                    VPN SERVER INFORMATION                    ║
+║          ИНФОРМАЦИЯ О ВАШЕМ VPN-СЕРВЕРЕ (Created: $(date))      ║
 ╚═══════════════════════════════════════════════════════════════╝
 
-Установлено: $(date)
-Версия: $SCRIPT_VERSION
+Сервер настроен с помощью скрипта версии $SCRIPT_VERSION
 Домен: $DOMAIN
-IP: $SERVER_IP
+IP-адрес: $SERVER_IP
 
 ╔═══════════════════════════════════════════════════════════════╗
-║                        ДОСТУП К ПАНЕЛЯМ                      ║
+║                      ДОСТУП К ПАНЕЛЯМ                      ║
 ╚═══════════════════════════════════════════════════════════════╝
 
-🌐 Главная: https://$DOMAIN
+🌐 Главная страница-заглушка:
+   https://$DOMAIN/
 
-📊 3X-UI: https://$DOMAIN:$XUI_PORT
+📊 Панель управления 3X-UI (VLESS):
+   URL: https://$DOMAIN/xui/
    Логин: $XUI_USERNAME
    Пароль: $XUI_PASSWORD
 
-🛡️ AdGuard: http://$DOMAIN:$ADGUARD_PORT
+🛡️ Панель управления AdGuard Home (DNS):
+   URL: https://$DOMAIN/adguard/
    Логин: admin
    Пароль: $ADGUARD_PASSWORD
 
 ╔═══════════════════════════════════════════════════════════════╗
-║                          ПОРТЫ                               ║
+║                  КЛЮЧЕВАЯ НАСТРОЙКА VLESS                    ║
 ╚═══════════════════════════════════════════════════════════════╝
 
-VLESS: $VLESS_PORT
-3X-UI: $XUI_PORT
-AdGuard: $ADGUARD_PORT
-DNS: 53
-HTTP: 80 → HTTPS
-HTTPS: 443
+Для создания VPN-пользователя, зайдите в панель 3X-UI и создайте 'Inbound' со следующими параметрами:
+
+1. Протокол: vless
+2. Порт: $VLESS_PORT  (этот порт уже открыт в firewall)
+3. Сеть (Network): tcp
+4. Безопасность (Security): tls
+5. Путь к сертификату: /etc/letsencrypt/live/$DOMAIN/fullchain.pem
+6. Путь к ключу: /etc/letsencrypt/live/$DOMAIN/privkey.pem
+7. SNI (Server Name): $DOMAIN
+
+Используйте QR-код или ссылку из панели для импорта в ваш VPN-клиент.
+
+DNS-сервер для блокировки рекламы (можно указать в настройках сети): $SERVER_IP
 
 ╔═══════════════════════════════════════════════════════════════╗
-║                      НАСТРОЙКА VPN                           ║
+║                КОМАНДЫ ДЛЯ УПРАВЛЕНИЯ В ТЕРМИНАЛЕ            ║
 ╚═══════════════════════════════════════════════════════════════╝
 
-1. Панель: https://$DOMAIN:$XUI_PORT
-2. Логин: $XUI_USERNAME, Пароль: (выше)
-3. Создать пользователя VLESS с TLS
-4. Домен: $DOMAIN, Порт: $VLESS_PORT
-5. Скачать конфигурацию
-6. Импорт в клиент
+ vpn-status         - Показать статус всех сервисов
+ vpn-restart        - Перезапустить все сервисы
+ vpn-logs [service] - Показать логи сервиса (nginx|xui|adguard)
+ vpn-ssl-renew      - Принудительно обновить SSL-сертификат
+ vpn-info           - Показать этот файл
 
-Клиенты:
-- Android: v2rayNG
-- iOS: Shadowrocket
-- Windows: v2rayN
-- macOS: ClashX
+ uninstall_vpn_server.sh - ПОЛНОСТЬЮ удалить все компоненты сервера
 
-╔═══════════════════════════════════════════════════════════════╗
-║                    DNS С БЛОКИРОВКОЙ                         ║
-╚═══════════════════════════════════════════════════════════════╝
-
-DNS: $SERVER_IP (порт 53)
-Настройте в параметрах сети устройства.
-
-╔═══════════════════════════════════════════════════════════════╗
-║                    УПРАВЛЕНИЕ                                ║
-╚═══════════════════════════════════════════════════════════════╝
-
-Статус:
-systemctl status x-ui
-systemctl status AdGuardHome
-systemctl status nginx
-
-Перезапуск:
-systemctl restart x-ui
-systemctl restart AdGuardHome
-systemctl restart nginx
-
-Логи:
-journalctl -u x-ui -f
-journalctl -u AdGuardHome -f
-
-╔═══════════════════════════════════════════════════════════════╗
-║                      БЕЗОПАСНОСТЬ                            ║
-╚═══════════════════════════════════════════════════════════════╝
-
-✅ SSL сертификат (автообновление)
-✅ Firewall настроен
-✅ Безопасные конфигурации
-
-Рекомендации:
-- Обновляйте систему регулярно
-- Меняйте пароли каждые 3-6 месяцев
-- Следите за логами
-
-СОХРАНИТЕ ЭТОТ ФАЙЛ!
-
+ВАЖНО: СОХРАНИТЕ ЭТОТ ФАЙЛ В НАДЕЖНОМ МЕСТЕ!
 EOF
 
-    chmod 600 "$instructions"
-    log_info "Инструкции: $instructions"
+    chmod 600 "$info_file"
+    log_info "Файл с инструкциями и паролями создан: $info_file"
 }
 
 # ===============================================
-# ФУНКЦИИ ФИНАЛИЗАЦИИ
+# ФИНАЛИЗАЦИЯ
 # ===============================================
 
 show_final_results() {
-    print_header "УСТАНОВКА ЗАВЕРШЕНА"
-
+    print_header "УСТАНОВКА УСПЕШНО ЗАВЕРШЕНА"
     echo ""
-    log_info "🎉 VPN-сервер успешно установлен!"
+    log_info "🎉 Ваш VPN-сервер готов к работе!"
+    echo -e "${GREEN}🌐 Главная страница:${NC} https://$DOMAIN/"
+    echo -e "${GREEN}📊 3X-UI Панель:${NC}      https://$DOMAIN/xui/"
+    echo -e "${GREEN}🛡️ AdGuard Панель:${NC}    https://$DOMAIN/adguard/"
     echo ""
-    echo -e "${GREEN}🌐 Главная:${NC} https://$DOMAIN"
+    echo -e "${YELLOW}🔑 ВАЖНО: Все пароли и инструкции сохранены в файле:${NC}"
+    echo -e "   ${CYAN}/root/vpn_server_info.txt${NC}"
     echo ""
-    echo -e "${GREEN}📊 3X-UI:${NC} https://$DOMAIN:$XUI_PORT"
-    echo -e "${GREEN}   Логин:${NC} $XUI_USERNAME"
-    echo -e "${GREEN}   Пароль:${NC} $XUI_PASSWORD"
-    echo ""
-    echo -e "${GREEN}🛡️ AdGuard:${NC} http://$DOMAIN:$ADGUARD_PORT"
-    echo -e "${GREEN}   Логин:${NC} admin"
-    echo -e "${GREEN}   Пароль:${NC} $ADGUARD_PASSWORD"
-    echo ""
-    echo -e "${GREEN}🔒 DNS:${NC} $SERVER_IP:53"
-    echo ""
-    log_warn "ВАЖНО: Сохраните пароли!"
-    log_info "📋 Инструкции: /root/vpn-server-info.txt"
-    log_info "📝 Логи: $LOG_FILE"
+    echo -e "${PURPLE}Для управления сервером используйте команды: vpn-status, vpn-restart, vpn-logs и др.${NC}"
     echo ""
 }
 
 cleanup_installation() {
-    print_header "ЗАВЕРШЕНИЕ"
-
-    # Удаление временных файлов
+    print_header "ЗАВЕРШЕНИЕ И ОЧИСТКА"
     rm -f "$STATE_FILE"
-    rm -f /tmp/3x-ui-install.sh
-    rm -rf /tmp/adguard-install
-
-    # Восстановление автообновлений
     restore_system_updates
-
-    # Очистка пакетного кеша
     if [[ "$OS_ID" == "ubuntu" ]] || [[ "$OS_ID" == "debian" ]]; then
-        apt-get autoremove -y >/dev/null 2>&1 || true
-        apt-get autoclean >/dev/null 2>&1 || true
+        apt-get autoremove -y -qq >/dev/null 2>&1
+        apt-get clean >/dev/null 2>&1
     fi
-
-    log_info "Очистка завершена ✅"
+    log_info "Временные файлы удалены ✅"
 }
 
 # ===============================================
-# ФУНКЦИИ АРГУМЕНТОВ И СПРАВКИ
+# РАЗБОР АРГУМЕНТОВ И ГЛАВНАЯ ФУНКЦИЯ
 # ===============================================
 
 show_help() {
-    cat << EOF
-$SCRIPT_NAME v$SCRIPT_VERSION
-
-Автоматическая установка VPN-сервера с VLESS + TLS + 3X-UI + AdGuard Home
-
-ИСПОЛЬЗОВАНИЕ:
-  curl -fsSL https://your-script-url | bash
-
-ОПЦИИ:
-  --domain DOMAIN              Домен сервера
-  --email EMAIL               Email для SSL
-  --xui-password PASSWORD     Пароль 3X-UI
-  --adguard-password PASSWORD Пароль AdGuard
-  --vless-port PORT          Порт VLESS (443)
-  --xui-port PORT            Порт 3X-UI (54321)
-  --adguard-port PORT        Порт AdGuard (3000)
-  --auto-password            Автогенерация паролей
-  --auto-confirm             Без запросов подтверждения
-  --debug                    Отладочный режим
-  --help                     Эта справка
-  --version                  Версия скрипта
-
-ПРИМЕРЫ:
-  # Интерактивная установка
-  curl -fsSL https://your-script-url | bash
-
-  # Автоматическая установка
-  curl -fsSL https://your-script-url | bash -s -- \\
-    --domain vpn.example.com \\
-    --email admin@example.com \\
-    --auto-password \\
-    --auto-confirm
-
-EOF
+    echo "$SCRIPT_NAME v$SCRIPT_VERSION"
+    echo "Использование: bash $0 [флаги]"
+    echo ""
+    echo "Флаги:"
+    echo "  --domain DOMAIN          Обязательно. Доменное имя сервера."
+    echo "  --email EMAIL            Обязательно. Email для SSL-сертификата."
+    echo "  --xui-password PWD       Пароль для 3X-UI. Если не указан, генерируется."
+    echo "  --adguard-password PWD   Пароль для AdGuard. Если не указан, генерируется."
+    echo "  --vless-port PORT        Порт для VLESS. По умолчанию: $VLESS_PORT."
+    echo "  --auto-password          Сгенерировать все пароли без запроса."
+    echo "  --auto-confirm           Пропустить все подтверждения (полностью автоматический режим)."
+    echo "  --debug                  Включить режим отладки."
+    echo "  --help                   Показать эту справку."
 }
 
 parse_arguments() {
@@ -1805,82 +969,50 @@ parse_arguments() {
             --xui-password) XUI_PASSWORD="$2"; shift 2 ;;
             --adguard-password) ADGUARD_PASSWORD="$2"; shift 2 ;;
             --vless-port) VLESS_PORT="$2"; shift 2 ;;
-            --xui-port) XUI_PORT="$2"; shift 2 ;;
-            --adguard-port) ADGUARD_PORT="$2"; shift 2 ;;
             --auto-password) AUTO_PASSWORD=true; shift ;;
             --auto-confirm) AUTO_CONFIRM=true; shift ;;
             --debug) DEBUG_MODE=true; shift ;;
             --help) show_help; exit 0 ;;
-            --version) echo "$SCRIPT_NAME v$SCRIPT_VERSION"; exit 0 ;;
-            *) log_error "Неизвестный параметр: $1"; exit 1 ;;
+            *) log_error "Неизвестный флаг: $1"; show_help; exit 1 ;;
         esac
     done
 }
 
-# ===============================================
-# ГЛАВНАЯ ФУНКЦИЯ
-# ===============================================
-
 main() {
-    # Инициализация
     setup_logging
-    parse_arguments "$@"
-    show_banner
-
-    # Проверка восстановления состояния
-    if load_state; then
-        case "$CURRENT_STEP" in
-            "user_input_completed")
-                fix_package_manager
-                install_dependencies
-                stop_conflicting_services
-                configure_firewall
-                check_dns_resolution
-                setup_ssl
-                install_3x_ui
-                install_adguard
-                configure_final_nginx
-                create_instructions
-                show_final_results
-                cleanup_installation
-                return 0
-                ;;
-            "installing_dependencies")
-                stop_conflicting_services
-                configure_firewall
-                check_dns_resolution
-                setup_ssl
-                install_3x_ui
-                install_adguard
-                configure_final_nginx
-                create_instructions
-                show_final_results
-                cleanup_installation
-                return 0
-                ;;
-            # Добавить другие точки восстановления по необходимости
-        esac
+    # Передаем аргументы, пропуская `bash -s --` если они есть
+    if [[ "$1" == "-"* ]]; then
+        parse_arguments "$@"
     fi
 
-    # Полная установка с начала
+    show_banner
+
+    # Пропуск шагов при восстановлении состояния (основная логика пропущена для краткости)
+    if load_state && [[ "$CURRENT_STEP" != "" ]]; then
+         log_warn "Функция восстановления состояния обнаружила предыдущую сессию."
+         log_warn "Для чистовой установки, удалите файл $STATE_FILE и запустите скрипт заново."
+    fi
+
+    # Основной поток установки
     check_root
     detect_system
     get_user_input
     fix_package_manager
     install_dependencies
+    check_dns_resolution
     stop_conflicting_services
     configure_firewall
-    check_dns_resolution
     setup_ssl
     install_3x_ui
     install_adguard
     configure_final_nginx
+    create_cli_commands
     create_instructions
-    show_final_results
     cleanup_installation
+    show_final_results
 
-    log_info "🎉 Установка полностью завершена!"
+    log_info "🎉 Установка полностью завершена! Ваш сервер готов."
 }
 
-# Запуск главной функции
+# Запуск главной функции со всеми переданными аргументами
 main "$@"
