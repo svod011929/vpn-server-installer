@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="160" viewBox="0 0 900 160">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0D1117"/>
+      <stop offset="100%" stop-color="#161B22"/>
+    </linearGradient>
+  </defs>
+  <rect width="900" height="160" rx="16" fill="url(#bg)" stroke="#30363D"/>
+  <rect x="0" y="0" width="6" height="160" fill="#38BDF8"/>
+  <text x="36" y="42" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="20" font-weight="700" fill="#E6EDF3">О проекте</text>
+  
+  <text x="36" y="88" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="15" fill="#C9D1D9">Автоматический установщик VPN-сервера с VLESS + TLS + 3X-UI + AdGuard</text>
+<text x="36" y="110" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="15" fill="#C9D1D9">Home</text>
+
+</svg>
