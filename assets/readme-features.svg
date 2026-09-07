@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="220" viewBox="0 0 900 220">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0D1117"/>
+      <stop offset="100%" stop-color="#161B22"/>
+    </linearGradient>
+  </defs>
+  <rect width="900" height="220" rx="16" fill="url(#bg)" stroke="#30363D"/>
+  <text x="36" y="40" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="20" font-weight="700" fill="#E6EDF3">Возможности</text>
+
+  <rect x="28" y="60" width="412" height="62" rx="12" fill="#0B1220" stroke="#30363D"/>
+  <rect x="28" y="60" width="5" height="62" fill="#38BDF8"/>
+  <text x="52" y="98" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="15" fill="#C9D1D9">✅ Блокировка рекламы на DNS уровне</text>
+
+  <rect x="460" y="60" width="412" height="62" rx="12" fill="#0B1220" stroke="#30363D"/>
+  <rect x="460" y="60" width="5" height="62" fill="#38BDF8"/>
+  <text x="484" y="98" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="15" fill="#C9D1D9">✅ Защита от трекинга</text>
+
+  <rect x="28" y="135" width="412" height="62" rx="12" fill="#0B1220" stroke="#30363D"/>
+  <rect x="28" y="135" width="5" height="62" fill="#38BDF8"/>
+  <text x="52" y="173" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="15" fill="#C9D1D9">✅ Веб-панели управления</text>
+
+  <rect x="460" y="135" width="412" height="62" rx="12" fill="#0B1220" stroke="#30363D"/>
+  <rect x="460" y="135" width="5" height="62" fill="#38BDF8"/>
+  <text x="484" y="173" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="15" fill="#C9D1D9">✅ Мониторинг подключений</text>
+</svg>
