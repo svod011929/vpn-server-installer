@@ -14,8 +14,8 @@
   <rect x="0" y="0" width="900" height="4" fill="url(#line)"/>
   <rect x="0" y="0" width="6" height="190" fill="#38BDF8"/>
   <text x="36" y="52" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="28" font-weight="700" fill="#E6EDF3">vpn-server-installer</text>
-  <rect x="36" y="68" width="74" height="22" rx="6" fill="#38BDF8" fill-opacity="0.18" stroke="#38BDF8"/>
-  <text x="48" y="84" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" fill="#38BDF8">Shell</text>
+  <rect x="36" y="68" width="70" height="22" rx="6" fill="#38BDF8" fill-opacity="0.18" stroke="#38BDF8"/>
+  <text x="48" y="84" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" fill="#38BDF8">VPN</text>
   <text x="36" y="100" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="16" fill="#8B949E">Автоматический установщик VPN-сервера с VLESS + TLS + 3X-UI + AdGuard</text>
 <text x="36" y="122" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="16" fill="#8B949E">Home</text>
 
