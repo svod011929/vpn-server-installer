@@ -14,7 +14,7 @@
 
 <p align="center">
   <a href="https://github.com/svod011929/vpn-server-installer"><img src="https://img.shields.io/badge/GitHub-vpn-server-installer-0D1117?style=for-the-badge&logo=github&logoColor=38BDF8" alt="repo" /></a>
-  <a href="https://t.me/KodoDrive"><img src="https://img.shields.io/badge/Telegram-@KodoDrive-26A5E4?style=for-the-badge&logo=telegram&logoColor=white" alt="tg" /></a>
+  <a href="https://t.me/gveom"><img src="https://img.shields.io/badge/Telegram-@gveom-26A5E4?style=for-the-badge&logo=telegram&logoColor=white" alt="tg" /></a>
   <a href="https://github.com/svod011929"><img src="https://img.shields.io/badge/Author-svod011929-7C3AED?style=for-the-badge&logo=github&logoColor=white" alt="author" /></a>
 </p>
 
@@ -638,7 +638,7 @@ copies of the Software...
 
 | Канал | Ссылка | Описание |
 |-------|--------|----------|
-| 💬 **Telegram** | [@svod011929](https://t.me/svod011929) | Быстрая помощь |
+| 💬 **Telegram** | [@gveom](https://t.me/gveom) | Быстрая помощь |
 | 🐛 **Issues** | [GitHub Issues](https://github.com/svod011929/vpn-server-installer/issues) | Баг-репорты |
 | 📖 **Wiki** | [GitHub Wiki](https://github.com/svod011929/vpn-server-installer/wiki) | Документация |
 
@@ -698,7 +698,7 @@ Made with ❤️ by [svod011929](https://github.com/svod011929)
 
 ## Проекты KodoDrive
 
-Другие проекты автора: [профиль @svod011929](https://github.com/svod011929) · [Telegram](https://t.me/KodoDrive)
+Другие проекты автора: [профиль @svod011929](https://github.com/svod011929) · [Telegram](https://t.me/gveom)
 
 ### VPN и инфраструктура
 
